@@ -1,4 +1,7 @@
 env/backend.env
 env/socket.env
+env/frontend.env
+certbot-www/
+certs/
 *.log
 .DS_Store
