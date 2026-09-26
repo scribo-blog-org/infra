@@ -19,9 +19,10 @@ git clone git@github.com:scribo-blog-org/infra.git /opt/scribo
 cd /opt/scribo
 cp env/backend.env.example env/backend.env
 cp env/socket.env.example env/socket.env
+cp env/frontend.env.example env/frontend.env
 ```
 
-Fill both env files. `FRONTEND_ORIGIN` and `API_ORIGIN` are the public origin, for example `http://203.0.113.10`. In the frontend repository set Actions variables to that same origin:
+Fill the env files. `FRONTEND_ORIGIN`, `API_ORIGIN`, and the frontend public URLs are the public origin, for example `http://203.0.113.10`. The frontend image does not bake these in. The container reads `env/frontend.env` when it starts:
 
 | Variable | Example |
 | --- | --- |
