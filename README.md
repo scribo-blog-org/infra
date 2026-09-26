@@ -1,23 +1,39 @@
-# Scribo на VM
+# Scribo
 
-Один compose на машине Google Cloud. Сайт: `https://scribo-blog.duckdns.org`. Каталог на сервере: `/opt/scribo`, пользователь `scribo`. Исходники приложений на сервер не кладутся. Сервер только скачивает готовые образы из ghcr.io.
+Публичный сайт блога. Четыре репозитория: этот (`infra`) описывает машину, на которой всё крутится. Код приложений живёт отдельно.
 
-MongoDB на этой машине нет, база снаружи. Redis только во внутренней сети Docker.
-
-## Что слушает наружу
-
-Наружу открыты только 80 и 443 у nginx. Остальные порты — `expose` внутри сети `scribo`, с хоста они не доступны.
-
-| Снаружи | Куда |
+| Репозиторий | Что это |
 | --- | --- |
-| `443` | nginx, основной трафик |
-| `80` | nginx: `/.well-known/acme-challenge/` для Let's Encrypt, всё остальное редирект на HTTPS |
+| `frontend` | Next.js, страницы и браузерный клиент |
+| `backend` | NestJS, HTTP API |
+| `socket` | WebSocket: сообщения и присутствие |
+| `infra` | Compose, nginx, сертификат, env на сервере |
 
-| Путь | Контейнер |
+Сайт: `https://scribo-blog.duckdns.org`. Один DNS-адрес, один IP. Снаружи открыты только порты 80 и 443.
+
+## Как запрос доходит до сервиса
+
+Браузер всегда ходит на один хост. Nginx смотрит на путь и отдаёт запрос контейнеру во внутренней сети Docker `scribo`. Имена `frontend`, `backend`, `socket` и `redis` — это DNS Docker, не публичные адреса.
+
+| Путь | Куда |
 | --- | --- |
-| `/` | `frontend:3000` |
-| `/api`, `/health` | `backend:3001` |
+| `/`, страницы, `/_next` | `frontend:3000` |
+| `/api`, `/api/...` | `backend:3001` |
+| `/health` | `backend:3001` |
 | `/ws` | `socket:3002` |
+| `/.well-known/acme-challenge/` | файлы certbot, только по HTTP |
+
+Порты 3000, 3001 и 3002 наружу не опубликованы. Проверить API снаружи можно только так: `https://scribo-blog.duckdns.org/api/...` и `https://scribo-blog.duckdns.org/health`.
+
+Фронт не ходит на backend по локальному порту. В браузере `NEXT_PUBLIC_APP_API_URL` равен `https://scribo-blog.duckdns.org`, к нему дописывается `/api/...`, и запрос снова приходит на nginx. Сокет так же: `wss://scribo-blog.duckdns.org/ws`.
+
+В `proxy_pass` адрес задан переменной, резолвер — Docker DNS `127.0.0.11`. После пересоздания контейнера nginx берёт новый IP без своего рестарта.
+
+Журнал успешных запросов nginx выключен (`access_log off`). Ошибки пишутся в `error_log`. Файл конфига смонтирован в контейнер как один файл. Править его на хосте нужно так, чтобы inode не менялся, либо после правки пересоздать контейнер nginx. `sed -i` создаёт новый файл, и уже запущенный контейнер продолжает читать старый.
+
+## Что где хранится
+
+На виртуальной машине нет исходников и нет MongoDB. База — MongoDB Atlas. Файлы постов — S3. Redis живёт только в compose, без снимков и без AOF: после пересоздания контейнера очередь и присутствие пустые, это нормально.
 
 | Сервис | Образ | Память |
 | --- | --- | --- |
@@ -27,15 +43,11 @@ MongoDB на этой машине нет, база снаружи. Redis тол
 | socket | `ghcr.io/scribo-blog-org/socket:latest` | 128 МБ |
 | redis | `redis:7-alpine` | 160 МБ, из них 128 МБ на данные |
 
-У всех сервисов `restart: unless-stopped`. После перезагрузки VM Docker поднимает контейнеры сам. `docker` и `cron` должны быть `enabled` в systemd.
+Каталог на сервере: `/opt/scribo`. Пользователь машины: `scribo`. Деплой из GitHub Actions заходит как `github-actions-deploy`. Он в группе `docker`. Секреты в `env/backend.env` и `env/socket.env` должны быть читаемы группой (`640`), каталог `env` — доступен этому пользователю.
 
-Nginx резолвит имена контейнеров через Docker DNS `127.0.0.11`. В `proxy_pass` адрес задан переменной, поэтому пересоздание одного контейнера не оставляет nginx на старом IP.
+`env/*.env` не коммитятся. У backend и socket разные файлы. Сокету нельзя отдавать `JWT_PRIVATE_KEY` и `JWT_REFRESH_KEY`: процесс при старте из-за этого завершается. Оба ходят в Redis по `redis://redis:6379`.
 
-Сокет не получает `JWT_PRIVATE_KEY` и `JWT_REFRESH_KEY`. У backend и socket разные env-файлы. Оба ходят в Redis по `redis://redis:6379`.
-
-## Публичные адреса
-
-Файлы `env/*.env` на сервере не коммитятся. Фронт читает `NEXT_PUBLIC_*` при старте контейнера и отдаёт их в страницу как `window.__SCRIBO_ENV`. В образ они не зашиваются. После правки env контейнер нужно пересоздать: обычный restart подхватит файл только если контейнер создаётся заново.
+Публичные значения, которые уже стоят на сервере:
 
 | Файл | Переменная | Значение |
 | --- | --- | --- |
@@ -46,70 +58,71 @@ Nginx резолвит имена контейнеров через Docker DNS `
 | `env/frontend.env` | `NEXT_PUBLIC_SOCKET_URL` | `wss://scribo-blog.duckdns.org/ws` |
 | `env/frontend.env` | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | id веб-клиента Google |
 
-`FRONTEND_ORIGIN` — разрешённый CORS origin и базовый адрес ссылок в письмах. Без завершающего слэша.
+`FRONTEND_ORIGIN` — разрешённый CORS origin и базовый адрес ссылок в письмах, без завершающего слэша. В Google Cloud Console у этого client id в Authorized JavaScript origins должен быть `https://scribo-blog.duckdns.org`.
 
-В Google Cloud Console у этого client id в Authorized JavaScript origins должен быть `https://scribo-blog.duckdns.org`.
+Фронт читает `NEXT_PUBLIC_*` при старте контейнера и отдаёт их в страницу как `window.__SCRIBO_ENV`. В образ они не зашиваются. После правки env контейнер нужно пересоздать.
 
-## Образы: сборка и выкладка
+## Как сервисы связаны
 
-Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions. Actions собирает образ и пушит в ghcr.io два тега: `latest` и короткий sha коммита.
+Backend пишет в Mongo и S3, шлёт почту и публикует события в Redis-канал `scribo:events`. Socket подписан на этот канал и на канал присутствия. Он проверяет access JWT публичным ключом RS256 и читает участников беседы из той же Mongo, но сам сообщения не создаёт: создание остаётся HTTP-запросом к backend.
 
-| Репозиторий | Образ |
-| --- | --- |
-| `frontend` | `ghcr.io/scribo-blog-org/frontend` |
-| `backend` | `ghcr.io/scribo-blog-org/backend` |
-| `socket` | `ghcr.io/scribo-blog-org/socket` |
+Схема:
 
-Автоматический заход на сервер по SSH сейчас выключен: секрет `SSH_PRIVATE_KEY` в Actions пустой, шаг Deploy via SSH пропускается. Образ в реестре появляется, на VM сам не встаёт.
-
-После успешного Actions на сервере:
-
-```bash
-cd /opt/scribo
-docker compose pull frontend
-docker compose up -d --no-deps frontend
+```
+браузер
+  │  HTTPS / WSS
+  ▼
+nginx
+  ├─ /            → frontend
+  ├─ /api /health → backend ── MongoDB Atlas
+  │                    │       S3, почта
+  │                    └── Redis pub/sub
+  └─ /ws          → socket ───┘
+                         └── MongoDB Atlas (только проверка участника)
 ```
 
-Имя сервиса то же, что в compose: `frontend`, `backend` или `socket`. `--no-deps` не перезапускает соседей. Nginx из-за переменной в `proxy_pass` подхватывает новый IP контейнера без своего рестарта.
+## Сборка и выкладка
 
-Сборки на VM нет. `docker compose build` здесь не используется.
+Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину.
+
+На сервере для своего сервиса выполняется `docker compose pull` и `docker compose up -d`. После этого `docker image prune -f` удаляет безымянные образы, оставшиеся от прошлого `latest`. Образ `certbot/certbot` эта команда не трогает.
+
+Сборки на машине нет. `docker compose build` здесь не используется.
+
+Каждый деплой оставляет предыдущий образ без тега. Без `docker image prune -f` диск забивается слоями `node_modules`.
+
+Pull request в `master` гоняет отдельный workflow: lint, test и локальный `docker build` без push. В комментарии к PR таблица шагов Lint, Test, Build. Пока проверка `Build` не зелёная, мерж закрыт правилом репозитория, если ruleset уже включён.
 
 ## Сертификат
 
-Let's Encrypt, webroot. Сертификат лежит на хосте в `/opt/scribo/certs` и смонтирован в nginx как `/etc/letsencrypt` только для чтения. Проверка владения доменом: nginx отдаёт `/opt/scribo/certbot-www` по `/.well-known/acme-challenge/` и по HTTP, и этот путь не редиректится на HTTPS.
+Let's Encrypt, webroot. Сертификат на хосте в `/opt/scribo/certs`, в nginx он смонтирован как `/etc/letsencrypt` только для чтения. Проверка домена: nginx отдаёт `/opt/scribo/certbot-www` по `/.well-known/acme-challenge/` и по HTTP, этот путь не редиректится на HTTPS.
 
-Контакт сертификата: `scribo.blog.dev@gmail.com`. Файлы: `/opt/scribo/certs/live/scribo-blog.duckdns.org/`.
+Контакт: `scribo.blog.dev@gmail.com`. Файлы: `/opt/scribo/certs/live/scribo-blog.duckdns.org/`.
 
-Продление один раз прописано в crontab пользователя `scribo`. Каждый день в 03:00 certbot проверяет срок. Продлевает, когда до конца меньше месяца, и тогда перезапускает nginx. Сертификат живёт 90 дней. Задание переживает перезагрузку машины.
+Продление в crontab пользователя `scribo`, каждый день в 03:00. Certbot продлевает сертификат, когда до конца меньше месяца, и тогда перезапускает nginx. Сертификат живёт 90 дней.
 
 ```bash
 crontab -l
 ```
 
-Строка должна начинаться с `0 3 * * * docker run`.
+Строка должна начинаться с `0 3 * * * docker run`. Образ certbot между запусками может быть удалён полной очисткой `docker system prune -a`. Следующий запуск скачает его снова. Данные в `/opt/scribo/certs` от этого не зависят.
 
-Пока сертификата нет, nginx с блоком `listen 443 ssl` не стартует: файлов ключа ещё нет. Сначала конфиг только на порту 80 с location для ACME, потом `certbot certonly`, потом текущий `nginx.conf`.
+Пока сертификата нет, nginx с `listen 443 ssl` не стартует.
 
-## Что переживёт перезагрузку
+## Что переживает перезагрузку
 
-- сертификат и `nginx.conf` — файлы на диске;
-- контейнеры — политика `unless-stopped` и включённый Docker;
-- продление — crontab, cron запускается без логина на сервер.
-
-Проверка автозагрузки:
+Сертификат, `nginx.conf` и env лежат на диске. Контейнеры поднимает Docker (`restart: unless-stopped`, `docker` и `cron` в systemd — `enabled`). Redis после пересоздания пустой.
 
 ```bash
 systemctl is-enabled docker cron
 ```
 
-Ожидается `enabled` в обеих строках.
-
-## Обычные команды
+## Команды
 
 ```bash
 cd /opt/scribo
 docker compose ps
-docker compose logs --tail 50 nginx
+docker compose logs --tail 50
 curl -fsSI https://scribo-blog.duckdns.org/health
 ```
 
@@ -119,8 +132,21 @@ curl -fsSI https://scribo-blog.duckdns.org/health
 docker compose up -d --force-recreate --no-deps frontend
 ```
 
-Проверка конфига nginx до рестарта:
+Проверить nginx и перечитать конфиг, если файл не заменяли новым inode:
 
 ```bash
-docker compose exec nginx nginx -t && docker compose restart nginx
+docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload
+```
+
+Если конфиг правили через `sed -i`, контейнер нужно пересоздать:
+
+```bash
+docker compose up -d --no-deps --force-recreate nginx
+```
+
+Чистые логи с нуля — это новые контейнеры, не рестарт демона:
+
+```bash
+docker compose down
+docker compose up -d
 ```
