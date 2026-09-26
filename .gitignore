@@ -3,5 +3,6 @@ env/socket.env
 env/frontend.env
 certbot-www/
 certs/
+backups/
 *.log
 .DS_Store

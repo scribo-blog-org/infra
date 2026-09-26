@@ -110,6 +110,25 @@ crontab -l
 
 Пока сертификата нет, nginx с `listen 443 ssl` не стартует.
 
+## Бэкапы Mongo
+
+`backup-mongo.sh` читает базу из `env/backend.env` (`DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_NAME`) и снимает дамп одноразовым контейнером `mongo:7`. Compose и сайт не перезапускаются. Пароль не печатается в лог и не передаётся аргументом процесса.
+
+| Каталог | Что хранится |
+| --- | --- |
+| `backups/daily/` | `ГГГГ-ММ-ДД.archive.gz`, каждый запуск. Старше 30 дней удаляются |
+| `backups/weekly/` | По воскресеньям копия того же файла. Старше года удаляются |
+
+Каталог `backups` доступен только пользователю `scribo` (`700`). Архивы в git не коммитятся.
+
+Ручной запуск из `/opt/scribo`: `./backup-mongo.sh`.
+
+Cron пользователя `scribo`, в 04:15, после certbot в 03:00:
+
+```bash
+15 4 * * * /opt/scribo/backup-mongo.sh
+```
+
 ## Что переживает перезагрузку
 
 Сертификат, `nginx.conf` и env лежат на диске. Контейнеры поднимает Docker (`restart: unless-stopped`, `docker` и `cron` в systemd — `enabled`). Redis после пересоздания пустой.
