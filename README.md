@@ -94,6 +94,10 @@ nginx
 
 Pull request в `master` гоняет отдельный workflow: lint, test и локальный `docker build` без push. В комментарии к PR таблица шагов Lint, Test, Build. Пока проверка `Build` не зелёная, мерж закрыт правилом репозитория, если ruleset уже включён.
 
+Пуш в `master` этого репозитория тоже выкладывается. На сервере в `/opt/scribo` выполняется `git pull --ff-only` и `docker compose up -d` без `pull`: образы приложений не качаются, пересоздаются только сервисы, у которых изменилось описание в compose. Если в коммите менялись `nginx.conf` или `errors/`, новый конфиг проверяется через `nginx -t` на боевом сертификате, и контейнер nginx пересоздаётся отдельно. Файлы `env/*.env` workflow не перезаписывает.
+
+Pull request в `master` этого репозитория гоняет `nginx -t` на временном сертификате и `docker compose config`. На сервер он не заходит.
+
 ## Сертификат
 
 Let's Encrypt, webroot. Сертификат на хосте в `/opt/scribo/certs`, в nginx он смонтирован как `/etc/letsencrypt` только для чтения. Проверка домена: nginx отдаёт `/opt/scribo/certbot-www` по `/.well-known/acme-challenge/` и по HTTP, этот путь не редиректится на HTTPS.

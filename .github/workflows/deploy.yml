@@ -1,0 +1,59 @@
+# Выкладка compose и nginx при push в master.
+# Образы приложений не качаются: их выкладывают репозитории сервисов.
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Смена файла на хосте не входит в хеш сервиса Compose.
+      # Контейнер nginx пересоздаётся только если менялись эти пути.
+      - name: Nginx files in this push
+        id: nginx
+        run: |
+          before="${{ github.event.before }}"
+          if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            echo "recreate=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -Eq '^(nginx\.conf|errors/)'; then
+            echo "recreate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "recreate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          NGINX_RECREATE: ${{ steps.nginx.outputs.recreate }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: NGINX_RECREATE
+          script: |
+            cd /opt/scribo
+            git -c safe.directory=/opt/scribo pull --ff-only
+            docker compose up -d
+            if [ "$NGINX_RECREATE" = "true" ]; then
+              docker run --rm \
+                -v /opt/scribo/nginx.conf:/etc/nginx/nginx.conf:ro \
+                -v /opt/scribo/errors:/usr/share/nginx/errors:ro \
+                -v /opt/scribo/certs:/etc/letsencrypt:ro \
+                nginx:1.27-alpine nginx -t
+              docker compose up -d --no-deps --force-recreate nginx
+            fi
