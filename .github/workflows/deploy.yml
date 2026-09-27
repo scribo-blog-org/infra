@@ -45,9 +45,16 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: NGINX_RECREATE
+          script_stop: true
           script: |
+            set -eu
             cd /opt/scribo
-            git -c safe.directory=/opt/scribo pull --ff-only
+            owner=$(stat -c '%U' .)
+            if [ "$owner" = "$(id -un)" ]; then
+              git -c safe.directory=/opt/scribo pull --ff-only
+            else
+              sudo -n -u "$owner" git -c safe.directory=/opt/scribo pull --ff-only
+            fi
             docker compose up -d
             if [ "$NGINX_RECREATE" = "true" ]; then
               docker run --rm \
