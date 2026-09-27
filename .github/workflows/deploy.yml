@@ -49,8 +49,12 @@ jobs:
           script: |
             set -eu
             cd /opt/scribo
-            # Каталог принадлежит scribo, деплой пишет в .git через уже имеющийся docker.
-            docker run --rm -v /opt/scribo/.git:/git nginx:1.27-alpine chmod -R a+rwX /git
+            # Каталог принадлежит scribo. Пишем всё, кроме секретов, сертификата и бэкапов.
+            docker run --rm -v /opt/scribo:/work nginx:1.27-alpine sh -c '
+              find /work \
+                \( -path /work/env -o -path /work/certs -o -path /work/certbot-www -o -path /work/backups \) -prune \
+                -o -exec chmod a+rwX {} +
+            '
             git -c safe.directory=/opt/scribo pull --ff-only
             docker compose up -d
             if [ "$NGINX_RECREATE" = "true" ]; then
