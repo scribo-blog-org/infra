@@ -49,12 +49,9 @@ jobs:
           script: |
             set -eu
             cd /opt/scribo
-            owner=$(stat -c '%U' .)
-            if [ "$owner" = "$(id -un)" ]; then
-              git -c safe.directory=/opt/scribo pull --ff-only
-            else
-              sudo -n -u "$owner" git -c safe.directory=/opt/scribo pull --ff-only
-            fi
+            # Каталог принадлежит scribo, деплой пишет в .git через уже имеющийся docker.
+            docker run --rm -v /opt/scribo/.git:/git nginx:1.27-alpine chmod -R a+rwX /git
+            git -c safe.directory=/opt/scribo pull --ff-only
             docker compose up -d
             if [ "$NGINX_RECREATE" = "true" ]; then
               docker run --rm \
