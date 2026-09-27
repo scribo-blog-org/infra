@@ -84,9 +84,11 @@ nginx
 
 ## Сборка и выкладка
 
-Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину. Пуш в `dev` делает то же с тегом `staging` и поднимает сервис в `docker-compose.stage.yml`.
+Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину. Сервис прода поднимается сразу.
 
-На сервере для своего сервиса выполняется `docker compose pull` и `docker compose up -d`. Для `dev` файл compose другой, каталог тот же: `/opt/scribo`. После этого `docker image prune -f` удаляет безымянные образы, оставшиеся от прошлого тега. Образ `certbot/certbot` эта команда не трогает.
+Пуш в `dev` гоняет те же lint, test и сборку, публикует тег `staging` и скачивает образ на сервер. Контейнер пересоздаётся только если стейдж уже запущен. Если стейдж остановлен, новый образ просто лежит на диске. Мерж `dev` в `master` закрыт, пока проверка `Build` в pull request не зелёная.
+
+На сервере для прода выполняется `docker compose pull` и `docker compose up -d`. Для `dev` файл compose другой, каталог тот же: `/opt/scribo`. После этого `docker image prune -f` удаляет безымянные образы, оставшиеся от прошлого тега. Образ `certbot/certbot` эта команда не трогает.
 
 Сборки на машине нет. `docker compose build` здесь не используется.
 
@@ -114,7 +116,15 @@ Redis у стейджа свой, `redis://stage-redis:6379`. Каналы те 
 
 `NEXT_PUBLIC_*` читаются при старте контейнера. В Google Cloud Console у того же client id в Authorized JavaScript origins добавляется `https://scribo-blog-stage.duckdns.org`.
 
-Пока нет ветки `dev`, тег `staging` один раз ставится с текущего `latest`. Дальше его обновляет push в `dev`.
+Стейдж не работает постоянно. Пока он остановлен, пуш в `dev` только обновляет образ. Поднять и остановить:
+
+```bash
+cd /opt/scribo
+./stage up
+./stage down
+```
+
+`up` скачивает образы `staging` и запускает контейнеры. `down` их убирает. Образы, сертификат и `env/stage` остаются, следующий `up` поднимает стейдж снова.
 
 Сначала в DuckDNS имя `scribo-blog-stage` указывает на тот же IP, что и прод. Сертификат выпускается до выкладки нового `nginx.conf`. Иначе `nginx -t` не проходит, и боевой nginx не пересоздаётся. Проверка ACME уже обслуживается текущим сервером на порту 80.
 
@@ -140,11 +150,7 @@ for s in frontend backend socket; do
 done
 ```
 
-В `env/stage/backend.env` и `env/stage/socket.env` вписываются те же секреты, что в проде, с `DB_NAME=dev`. В `env/stage/frontend.env` копируется `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. После этого:
-
-```bash
-docker compose -f docker-compose.stage.yml up -d
-```
+В `env/stage/backend.env` и `env/stage/socket.env` вписываются те же секреты, что в проде, с `DB_NAME=dev`. В `env/stage/frontend.env` копируется `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. После этого стейдж поднимается командой `./stage up`.
 
 Продление уже в crontab: `certbot renew` подхватывает второй сертификат в том же каталоге.
 
