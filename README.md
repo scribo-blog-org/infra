@@ -9,7 +9,7 @@
 | `socket` | WebSocket: сообщения и присутствие |
 | `infra` | Compose, nginx, сертификат, env на сервере |
 
-Сайт: `https://scribo-blog.duckdns.org`. Один DNS-адрес, один IP. Снаружи открыты только порты 80 и 443.
+Сайт: `https://scribo-blog.duckdns.org`. Стейдж: `https://scribo-blog-stage.duckdns.org`. Оба имени смотрят на один IP. Снаружи открыты только порты 80 и 443.
 
 ## Как запрос доходит до сервиса
 
@@ -84,9 +84,9 @@ nginx
 
 ## Сборка и выкладка
 
-Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину.
+Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину. Пуш в `dev` делает то же с тегом `staging` и поднимает сервис в `docker-compose.stage.yml`.
 
-На сервере для своего сервиса выполняется `docker compose pull` и `docker compose up -d`. После этого `docker image prune -f` удаляет безымянные образы, оставшиеся от прошлого `latest`. Образ `certbot/certbot` эта команда не трогает.
+На сервере для своего сервиса выполняется `docker compose pull` и `docker compose up -d`. Для `dev` файл compose другой, каталог тот же: `/opt/scribo`. После этого `docker image prune -f` удаляет безымянные образы, оставшиеся от прошлого тега. Образ `certbot/certbot` эта команда не трогает.
 
 Сборки на машине нет. `docker compose build` здесь не используется.
 
@@ -98,11 +98,68 @@ Pull request в `master` гоняет отдельный workflow: lint, test и
 
 Pull request в `master` этого репозитория гоняет `nginx -t` на временном сертификате и `docker compose config`. На сервер он не заходит.
 
+## Стейдж
+
+Тот же сервер и тот же nginx. Второй compose не публикует порты и не поднимает свой nginx. Контейнеры стейджа входят в сеть Docker `scribo` под именами `stage-frontend`, `stage-backend`, `stage-socket` и `stage-redis`. Nginx прода выбирает их по `server_name scribo-blog-stage.duckdns.org`.
+
+Снаружи по-прежнему только 80 и 443. Внутри контейнера фронт слушает 3000, backend 3001, сокет 3002 — и у прода, и у стейджа. Это порты разных контейнеров, они не занимают хост и друг с другом не спорят. Запрос на боевой хост идёт в проект `scribo`, на стейдж — в проект `scribo-stage`.
+
+В `docker ps` два проекта. У `scribo`: nginx, frontend, backend, socket, redis. У `scribo-stage`: `scribo-stage-frontend`, `scribo-stage-backend`, `scribo-stage-socket`, `scribo-stage-redis`. Nginx один, в проде.
+
+Образы: `ghcr.io/scribo-blog-org/<сервис>:staging`. По замерам фронт, backend и сокет стейджа — около 148 МБ, свой Redis ещё около 5 МБ. Потолок приложений: фронт и backend по 120 МБ, сокет 64 МБ. Redis как у прода: потолок 160 МБ, данные до 128 МБ. Свободных было 344 МБ, после запуска останется около 190 МБ. Swap уже занят на 121 МБ, поэтому одновременный деплой и трафик могут снова упереться в swap и замедлить прод.
+
+Секреты копируются из прода в `env/stage/`. В git их нет, примеры лежат рядом как `*.env.example`. Меняются публичные адреса и имя базы: `DB_NAME=dev` у backend и socket. JWT, почта и бакет те же. Пользователь Atlas должен иметь право на базу `dev`.
+
+Redis у стейджа свой, `redis://stage-redis:6379`. Каналы те же, что у прода (`scribo:events`, `scribo:presence`): процессы ходят в разные контейнеры и не видят чужие сообщения. Код приложений для этого не меняется.
+
+`NEXT_PUBLIC_*` читаются при старте контейнера. В Google Cloud Console у того же client id в Authorized JavaScript origins добавляется `https://scribo-blog-stage.duckdns.org`.
+
+Пока нет ветки `dev`, тег `staging` один раз ставится с текущего `latest`. Дальше его обновляет push в `dev`.
+
+Сначала в DuckDNS имя `scribo-blog-stage` указывает на тот же IP, что и прод. Сертификат выпускается до выкладки нового `nginx.conf`. Иначе `nginx -t` не проходит, и боевой nginx не пересоздаётся. Проверка ACME уже обслуживается текущим сервером на порту 80.
+
+```bash
+cd /opt/scribo
+
+docker run --rm \
+  -v /opt/scribo/certs:/etc/letsencrypt \
+  -v /opt/scribo/certbot-www:/var/www/certbot \
+  certbot/certbot certonly --webroot -w /var/www/certbot \
+  -d scribo-blog-stage.duckdns.org \
+  --email scribo.blog.dev@gmail.com --agree-tos --non-interactive
+
+cp env/stage/backend.env.example env/stage/backend.env
+cp env/stage/frontend.env.example env/stage/frontend.env
+cp env/stage/socket.env.example env/stage/socket.env
+chgrp docker env/stage/backend.env env/stage/frontend.env env/stage/socket.env
+chmod 640 env/stage/backend.env env/stage/frontend.env env/stage/socket.env
+
+for s in frontend backend socket; do
+  docker pull "ghcr.io/scribo-blog-org/$s:latest"
+  docker tag "ghcr.io/scribo-blog-org/$s:latest" "ghcr.io/scribo-blog-org/$s:staging"
+done
+```
+
+В `env/stage/backend.env` и `env/stage/socket.env` вписываются те же секреты, что в проде, с `DB_NAME=dev`. В `env/stage/frontend.env` копируется `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. После этого:
+
+```bash
+docker compose -f docker-compose.stage.yml up -d
+```
+
+Продление уже в crontab: `certbot renew` подхватывает второй сертификат в том же каталоге.
+
+Проверка:
+
+```bash
+docker compose -f docker-compose.stage.yml ps
+curl -fsSI https://scribo-blog-stage.duckdns.org/health
+```
+
 ## Сертификат
 
 Let's Encrypt, webroot. Сертификат на хосте в `/opt/scribo/certs`, в nginx он смонтирован как `/etc/letsencrypt` только для чтения. Проверка домена: nginx отдаёт `/opt/scribo/certbot-www` по `/.well-known/acme-challenge/` и по HTTP, этот путь не редиректится на HTTPS.
 
-Контакт: `scribo.blog.dev@gmail.com`. Файлы: `/opt/scribo/certs/live/scribo-blog.duckdns.org/`.
+Контакт: `scribo.blog.dev@gmail.com`. Файлы прода: `/opt/scribo/certs/live/scribo-blog.duckdns.org/`. Файлы стейджа: `/opt/scribo/certs/live/scribo-blog-stage.duckdns.org/`.
 
 Продление в crontab пользователя `scribo`, каждый день в 03:00. Certbot продлевает сертификат, когда до конца меньше месяца, и тогда перезапускает nginx. Сертификат живёт 90 дней.
 

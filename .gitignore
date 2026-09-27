@@ -1,6 +1,9 @@
 env/backend.env
 env/socket.env
 env/frontend.env
+env/stage/backend.env
+env/stage/socket.env
+env/stage/frontend.env
 certbot-www/
 certs/
 backups/
