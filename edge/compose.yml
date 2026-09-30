@@ -1,0 +1,46 @@
+# Единственный стек, который занимает порты 80 и 443. Держит сертификаты и
+# раскидывает запросы по окружениям, глядя на домен.
+#
+#   ./scribo up edge
+#
+# Подключён к сетям обоих окружений и ходит в сервисы по именам контейнеров
+# (prod-backend:3001, stage-backend:3001). Зависимости от них нет: апстримы
+# заданы переменными с резолвером, поэтому nginx поднимается даже когда
+# окружение выключено, и отдаёт его status-страницу.
+
+name: scribo-edge
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: edge-nginx
+    mem_limit: ${MEM_NGINX:-64m}
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Список окружений: <приписка>:<домен>. Один блок server на запись,
+      # конфиг генерируется при старте из stack.conf.template.
+      STACKS: ${STACKS:?STACKS is required}
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./stack.conf.template:/etc/nginx/stack.conf.template:ro
+      - ./snippets:/etc/nginx/snippets:ro
+      - ./errors:/usr/share/nginx/errors:ro
+      - ./entrypoint.d/10-render-stacks.sh:/docker-entrypoint.d/10-render-stacks.sh:ro
+      - ${STATE_DIR:?STATE_DIR is required}/certs:/etc/letsencrypt:ro
+      - ${STATE_DIR:?STATE_DIR is required}/certbot-www:/var/www/certbot:ro
+    networks:
+      - prod
+      - stage
+    restart: unless-stopped
+
+# Сети создают стеки окружений. Скрипт scribo заводит их заранее, чтобы edge
+# поднимался и при выключенном окружении.
+networks:
+  prod:
+    external: true
+    name: scribo-prod
+  stage:
+    external: true
+    name: scribo-stage

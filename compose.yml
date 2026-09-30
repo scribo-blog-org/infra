@@ -1,0 +1,82 @@
+# Один стек приложений на оба окружения. Поднимается дважды, из каталога
+# окружения: там лежат stack.env для подстановок ниже и env/*.env для контейнеров.
+#
+#   ./scribo up prod
+#   ./scribo up stage
+#
+# STACK задаёт приписку в именах контейнеров и имя сети. Без него окружения
+# были бы неотличимы для nginx: у Docker в DNS нет имён с указанием сети,
+# и на запрос `backend` резолвер вернул бы адреса из обеих сетей сразу.
+
+services:
+  frontend:
+    image: ghcr.io/scribo-blog-org/frontend:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: ${STACK:?STACK is required}-frontend
+    mem_limit: ${MEM_FRONTEND:-512m}
+    env_file:
+      - ./env/frontend.env
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/scribo-blog-org/backend:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: ${STACK:?STACK is required}-backend
+    mem_limit: ${MEM_BACKEND:-512m}
+    env_file:
+      - ./env/backend.env
+    environment:
+      PORT: "3001"
+      # Внутри стека сервисы зовут друг друга по имени сервиса, без приписки.
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "3001"
+    restart: unless-stopped
+
+  socket:
+    image: ghcr.io/scribo-blog-org/socket:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: ${STACK:?STACK is required}-socket
+    mem_limit: ${MEM_SOCKET:-256m}
+    env_file:
+      - ./env/socket.env
+    environment:
+      PORT: "3002"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "3002"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${STACK:?STACK is required}-redis
+    mem_limit: ${MEM_REDIS:-320m}
+    command:
+      - redis-server
+      - --protected-mode
+      - "no"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+# Своя сеть на окружение. nginx из стека edge подключается к обеим и ходит
+# в сервисы по именам контейнеров: prod-backend:3001, stage-backend:3001.
+networks:
+  default:
+    name: scribo-${STACK:?STACK is required}

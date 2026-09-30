@@ -1,11 +1,7 @@
-env/backend.env
-env/socket.env
-env/frontend.env
-env/stage/backend.env
-env/stage/socket.env
-env/stage/frontend.env
-certbot-www/
-certs/
-backups/
+# Секреты и состояние живут вне репозитория, в /srv/scribo/<окружение>.
+# Правила ниже — страховка от случайного коммита и мусора локальных проверок.
+*.env
+!*.env.example
+.root/
 *.log
 .DS_Store

@@ -1,0 +1,85 @@
+# Описание одного окружения. 10-render-stacks.sh подставляет здесь только
+# приписку окружения и домен: envsubst вызывается со списком переменных, иначе
+# он съел бы $host, $remote_addr и остальные переменные самого nginx.
+
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location /ws {
+        set $socket_upstream ${STACK}-socket:3002;
+        proxy_pass http://$socket_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+    }
+
+    location /api/ {
+        set $backend_upstream ${STACK}-backend:3001;
+        proxy_pass http://$backend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    location = /api {
+        set $backend_upstream ${STACK}-backend:3001;
+        proxy_pass http://$backend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    location = /health {
+        set $backend_upstream ${STACK}-backend:3001;
+        proxy_pass http://$backend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+    }
+
+    # Страница статуса своего окружения. Проверки внутри неё идут по
+    # относительным путям, то есть на этот же домен и в эти же апстримы.
+    location = /status {
+        alias /usr/share/nginx/errors/${STACK}/frontend.html;
+        default_type text/html;
+        charset utf-8;
+        add_header Cache-Control "no-store" always;
+    }
+
+    location / {
+        set $frontend_upstream ${STACK}-frontend:3000;
+        proxy_pass http://$frontend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        error_page 502 =502 /__frontend_down.html;
+        error_page 503 =503 /__frontend_down.html;
+        error_page 504 =504 /__frontend_down.html;
+    }
+
+    # Static page when the frontend container is down. Nginx generates
+    # 502/504 itself on connect failure; Next responses are left as-is.
+    location = /__frontend_down.html {
+        internal;
+        alias /usr/share/nginx/errors/${STACK}/frontend.html;
+        default_type text/html;
+        charset utf-8;
+        add_header Cache-Control "no-store" always;
+    }
+}
