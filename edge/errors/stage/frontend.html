@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Scribo stage — service status</title>
+    <script>
+        (function () {
+            var isDark = true;
+            try {
+                var stored = localStorage.getItem("theme");
+                if (stored !== null) isDark = JSON.parse(stored);
+            } catch (e) {}
+            var html = document.documentElement;
+            html.classList.toggle("dark", isDark);
+            html.style.colorScheme = isDark ? "dark" : "light";
+        })();
+    </script>
+    <style>
+        :root {
+            --bg: #f1f1f1;
+            --band: #e7e7e7;
+            --panel: #f7f7f7;
+            --text: #161616;
+            --muted: #797979;
+            --icon: #4f4f4f;
+            --line: #c6c6c6;
+            --ok: #1a8f3c;
+            --bad: #ff4545;
+            --button: #1e1e1e;
+            --button-text: #f1f1f1;
+            --button-hover: #333333;
+            color-scheme: light;
+        }
+
+        html.dark {
+            --bg: #161616;
+            --band: #1e1e1e;
+            --panel: #161616;
+            --text: #f1f1f1;
+            --muted: #999999;
+            --icon: #c6c6c6;
+            --line: #333333;
+            --ok: #3dce6e;
+            --bad: #ff4545;
+            --button: #e7e7e7;
+            --button-text: #161616;
+            --button-hover: #ffffff;
+            color-scheme: dark;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body { margin: 0; min-height: 100%; }
+
+        body {
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .band {
+            background: var(--band);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .chain,
+        .panel {
+            --pad: 24px;
+            max-width: 880px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .chain {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 28px 12px;
+            padding: 40px var(--pad) 32px;
+        }
+
+        .node {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .art {
+            position: relative;
+            width: 88px;
+            height: 72px;
+            margin-bottom: 10px;
+            color: var(--icon);
+        }
+
+        .node.bad .art { color: var(--text); }
+
+        .art .picture {
+            display: block;
+            width: 88px;
+            height: 72px;
+        }
+
+        .badge {
+            position: absolute;
+            right: 0;
+            bottom: -4px;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: var(--band);
+        }
+
+        .badge svg { display: block; width: 26px; height: 26px; }
+
+        .node strong {
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .node .role {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .node .state {
+            margin-top: 2px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--muted);
+        }
+
+        .node.ok .state { color: var(--ok); }
+        .node.bad .state { color: var(--bad); }
+
+        .panel {
+            position: relative;
+            padding: 36px var(--pad) 64px;
+        }
+
+        .notch {
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            width: 22px;
+            height: 12px;
+            transform: translateX(-50%);
+            background: var(--panel);
+            clip-path: polygon(50% 0, 0 100%, 100% 100%);
+        }
+
+        .cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 48px;
+        }
+
+        h1, h2 {
+            margin: 0 0 12px;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.04em;
+        }
+
+        .env {
+            display: inline-block;
+            vertical-align: 2px;
+            margin-left: 6px;
+            padding: 2px 7px;
+            border-radius: 5px;
+            background: var(--muted);
+            color: #fff;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.55;
+            color: var(--muted);
+        }
+
+        .code {
+            margin-top: 16px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            letter-spacing: 0.02em;
+            color: var(--muted);
+        }
+
+        button {
+            margin-top: 20px;
+            appearance: none;
+            border: 0;
+            border-radius: 8px;
+            padding: 10px 16px;
+            background: var(--button);
+            color: var(--button-text);
+            font: inherit;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        button:hover { background: var(--button-hover); }
+
+        button:focus-visible {
+            outline: 2px solid var(--text);
+            outline-offset: 2px;
+        }
+
+        @media (max-width: 720px) {
+            .chain, .panel { --pad: 16px; }
+            .chain {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 22px 8px;
+                padding-top: 28px;
+                padding-bottom: 24px;
+            }
+            .art, .art .picture { width: 72px; height: 58px; }
+            .badge, .badge svg { width: 22px; height: 22px; }
+            .cols { grid-template-columns: 1fr; gap: 28px; }
+            .panel { padding-top: 28px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="band">
+        <div class="chain" id="services" role="list" aria-label="Service status"></div>
+    </div>
+    <main class="panel">
+        <div class="notch" id="notch" aria-hidden="true"></div>
+        <div class="cols">
+            <section>
+                <h1>What happened? <span class="env">stage</span></h1>
+                <p id="lead">Checking each service.</p>
+                <p class="code" id="code" hidden>502 · FRONTEND_UNAVAILABLE</p>
+            </section>
+            <section>
+                <h2>What can I do?</h2>
+                <p id="hint">This page is served by the host, including when the frontend is down.</p>
+                <button type="button" onclick="location.reload()">Try again</button>
+            </section>
+        </div>
+    </main>
+    <script>
+        var stroke = 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"';
+        var pictures = {
+            browser: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="16" y="14" width="56" height="40" rx="4"/><path d="M16 24h56"/><path d="M32 54v6M56 54v6M28 60h32"/></svg>',
+            host: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="22" y="16" width="44" height="16" rx="3"/><rect x="22" y="38" width="44" height="16" rx="3"/><path d="M30 24h.01M30 46h.01" stroke-width="3.4"/><path d="M38 24h16M38 46h16"/></svg>',
+            frontend: {
+                up: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="18" y="12" width="52" height="40" rx="4"/><path d="M18 22h52"/><path d="M34 36h.01M54 36h.01" stroke-width="3.4"/><path d="M36 46c3 5 13 5 16 0"/></svg>',
+                down: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="18" y="12" width="52" height="40" rx="4"/><path d="M18 22h52"/><path d="M34 34l6 6M40 34l-6 6"/><path d="M48 34l6 6M54 34l-6 6"/><path d="M36 50c3-5 13-5 16 0"/></svg>',
+                other: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="18" y="12" width="52" height="40" rx="4"/><path d="M18 22h52"/><path d="M30 34h28M30 42h18"/></svg>'
+            },
+            backend: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><rect x="18" y="14" width="52" height="44" rx="6"/><path d="M36 30l-8 6 8 6M52 30l8 6-8 6M48 28l-8 16"/></svg>',
+            socket: '<svg class="picture" viewBox="0 0 88 72" ' + stroke + '><circle cx="30" cy="38" r="8"/><path d="M46 30c7 4 7 12 0 16"/><path d="M54 24c12 7 12 21 0 28"/><path d="M62 18c16 10 16 30 0 40"/></svg>'
+        };
+        var badges = {
+            up: '<svg viewBox="0 0 26 26" fill="none" aria-hidden="true"><circle cx="13" cy="13" r="11" fill="var(--ok)"/><path d="M8 13.2l3.2 3.2L18 9.6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+            down: '<svg viewBox="0 0 26 26" fill="none" aria-hidden="true"><circle cx="13" cy="13" r="11" fill="var(--bad)"/><path d="M9 9l8 8M17 9l-8 8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
+            other: '<svg viewBox="0 0 26 26" fill="none" aria-hidden="true"><circle cx="13" cy="13" r="11" fill="var(--muted)"/><path d="M9 13h8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>'
+        };
+
+        function pictureFor(service) {
+            var art = pictures[service.id];
+            if (service.id !== "frontend") return art;
+            if (service.state === "up") return art.up;
+            if (service.state === "down") return art.down;
+            return art.other;
+        }
+
+        var services = [
+            { id: "browser", name: "You", role: "Browser", state: "up" },
+            { id: "host", name: "Host", role: "Nginx", state: "up" },
+            { id: "frontend", name: "Frontend", role: "App", state: "unknown" },
+            { id: "backend", name: "Backend", role: "API", state: "unknown" },
+            { id: "socket", name: "Socket", role: "Realtime", state: "unknown" }
+        ];
+
+        var labels = { up: "Working", down: "Down", unknown: "Unknown", checking: "Checking" };
+
+        function render() {
+            var root = document.getElementById("services");
+            root.replaceChildren.apply(root, services.map(function (service) {
+                var node = document.createElement("div");
+                node.className = "node" + (service.state === "up" ? " ok" : service.state === "down" ? " bad" : "");
+                node.setAttribute("role", "listitem");
+                node.dataset.id = service.id;
+                var badge = service.state === "up" ? badges.up : service.state === "down" ? badges.down : badges.other;
+                node.innerHTML = '<div class="art" aria-hidden="true">' + pictureFor(service) + '<span class="badge">' + badge + '</span></div><strong></strong><span class="role"></span><span class="state"></span>';
+                node.querySelector("strong").textContent = service.name;
+                node.querySelector(".role").textContent = service.role;
+                node.querySelector(".state").textContent = labels[service.state];
+                return node;
+            }));
+            placeNotch();
+        }
+
+        function placeNotch() {
+            var target = document.querySelector(".node.bad") || document.querySelector('[data-id="frontend"]');
+            var panel = document.querySelector(".panel");
+            var notch = document.getElementById("notch");
+            if (!target || !panel) return;
+            var item = target.getBoundingClientRect();
+            var box = panel.getBoundingClientRect();
+            notch.style.left = (item.left + item.width / 2 - box.left) + "px";
+        }
+
+        function setRemote(id, up) {
+            services.forEach(function (service) {
+                if (service.id === id) service.state = up ? "up" : "down";
+            });
+        }
+
+        function describe() {
+            var lead = document.getElementById("lead");
+            var hint = document.getElementById("hint");
+            var down = services.filter(function (service) {
+                return service.state === "down";
+            }).map(function (service) { return service.name; });
+
+            if (!down.length) {
+                lead.textContent = "Your browser, the host, and every service responded.";
+                hint.textContent = "Reload the page. The site should open.";
+                return;
+            }
+            lead.textContent = "Your browser reached the host. Down: " + down.join(", ") + ".";
+            hint.textContent = "Wait a minute and try again. The site opens once the frontend is back.";
+        }
+
+        render();
+        window.addEventListener("resize", placeNotch);
+
+        var nav = performance.getEntriesByType("navigation")[0];
+        if (nav && nav.responseStatus >= 500) {
+            document.getElementById("code").hidden = false;
+            document.getElementById("lead").textContent = "Your browser reached the host. The frontend did not answer this request. Checking the other services.";
+        }
+
+        services.forEach(function (service) {
+            if (service.id !== "browser" && service.id !== "host") service.state = "checking";
+        });
+        render();
+
+        function ask(url, method, alive) {
+            var options = { method: method, cache: "no-store" };
+            if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+                options.signal = AbortSignal.timeout(5000);
+            }
+            return fetch(url, options).then(alive).catch(function () { return false; });
+        }
+
+        Promise.all([
+            ask("/", "GET", function (response) { return response.ok; }),
+            ask("/health", "GET", function (response) { return response.ok; }),
+            ask("/ws", "GET", function (response) { return response.status < 500; })
+        ]).then(function (results) {
+            setRemote("frontend", results[0]);
+            setRemote("backend", results[1]);
+            setRemote("socket", results[2]);
+            render();
+            describe();
+        });
+    </script>
+</body>
+</html>

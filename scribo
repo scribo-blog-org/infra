@@ -1,0 +1,168 @@
+#!/bin/sh
+# Управление стеками на машине. Три цели: prod, stage, edge.
+#
+# Описание стеков берётся из репозитория, а состояние и секреты — из каталога
+# окружения под $SCRIBO_ROOT. Один compose.yml поднимается дважды: окружение
+# задаётся файлом stack.env, который читает сам compose.
+set -eu
+
+INFRA_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=${SCRIBO_ROOT:-/srv/scribo}
+CERTBOT_EMAIL=${CERTBOT_EMAIL:-scribo.blog.dev@gmail.com}
+CERTBOT_IMAGE=certbot/certbot
+# Должен совпадать с образом в edge/compose.yml: check проверяет тот же nginx.
+NGINX_IMAGE=nginx:1.27-alpine
+
+usage() {
+    cat >&2 <<'TEXT'
+usage: scribo <команда> [цель] [аргументы]
+
+  up <цель> [сервис...]      поднять
+  down <цель>                убрать контейнеры
+  pull <цель> [сервис...]    скачать образы
+  restart <цель> [сервис...]
+  logs <цель> [аргументы]
+  config <цель>              показать compose с подставленными значениями
+  ps [цель]                  без цели — все три
+  dc <цель> <аргументы...>   произвольная команда docker compose
+  check                      отрендерить конфиг nginx и прогнать nginx -t
+  certs                      первый выпуск сертификатов, edge должен быть выключен
+  renew                      продление, работает при поднятом edge
+
+цели: prod, stage, edge
+TEXT
+    exit 1
+}
+
+die() {
+    echo "scribo: $1" >&2
+    exit 1
+}
+
+# Список окружений, которые обслуживает nginx, в формате <приписка>:<домен>.
+# Файл не подключаем через `.`: в значении есть пробелы, и shell принял бы
+# вторую запись за команду. Compose такой файл разбирает сам и правильно.
+stacks() {
+    [ -f "$ROOT/edge/stack.env" ] || die "нет $ROOT/edge/stack.env"
+    sed -n 's/^STACKS=//p' "$ROOT/edge/stack.env" | tail -n 1
+}
+
+# Сети создаются стеками окружений, но edge должен подниматься и при выключенном
+# окружении, иначе останется без status-страницы. Поэтому заводим заранее.
+ensure_networks() {
+    for entry in $(stacks); do
+        net=scribo-${entry%%:*}
+        if ! docker network inspect "$net" >/dev/null 2>&1; then
+            docker network create "$net" >/dev/null
+        fi
+    done
+}
+
+compose() {
+    target=$1
+    shift
+    case $target in
+        prod | stage)
+            [ -f "$ROOT/$target/stack.env" ] || die "нет $ROOT/$target/stack.env"
+            docker compose \
+                --project-directory "$ROOT/$target" \
+                --env-file "$ROOT/$target/stack.env" \
+                -f "$INFRA_DIR/compose.yml" \
+                "$@"
+            ;;
+        edge)
+            [ -f "$ROOT/edge/stack.env" ] || die "нет $ROOT/edge/stack.env"
+            docker compose \
+                --env-file "$ROOT/edge/stack.env" \
+                -f "$INFRA_DIR/edge/compose.yml" \
+                "$@"
+            ;;
+        *)
+            die "неизвестная цель '$target', ожидается prod, stage или edge"
+            ;;
+    esac
+}
+
+command=${1:-}
+[ -n "$command" ] || usage
+shift
+
+case $command in
+    up)
+        [ -n "${1:-}" ] || usage
+        target=$1
+        shift
+        if [ "$target" = edge ]; then
+            ensure_networks
+        fi
+        compose "$target" up -d "$@"
+        ;;
+    down | pull | restart | logs | config)
+        [ -n "${1:-}" ] || usage
+        target=$1
+        shift
+        compose "$target" "$command" "$@"
+        ;;
+    dc)
+        [ -n "${1:-}" ] || usage
+        target=$1
+        shift
+        [ -n "${1:-}" ] || usage
+        compose "$target" "$@"
+        ;;
+    ps)
+        if [ -n "${1:-}" ]; then
+            compose "$1" ps
+        else
+            for target in edge prod stage; do
+                echo "== $target"
+                # В подоболочке: die внутри compose иначе завершил бы весь цикл.
+                (compose "$target" ps) || echo "   не настроен"
+            done
+        fi
+        ;;
+    check)
+        # Одноразовый контейнер с теми же монтированиями, что у edge: сначала
+        # рендер блоков по STACKS, затем проверка того, что реально применится.
+        docker run --rm \
+            -e STACKS="$(stacks)" \
+            -v "$INFRA_DIR/edge/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -v "$INFRA_DIR/edge/stack.conf.template:/etc/nginx/stack.conf.template:ro" \
+            -v "$INFRA_DIR/edge/snippets:/etc/nginx/snippets:ro" \
+            -v "$INFRA_DIR/edge/errors:/usr/share/nginx/errors:ro" \
+            -v "$INFRA_DIR/edge/entrypoint.d/10-render-stacks.sh:/docker-entrypoint.d/10-render-stacks.sh:ro" \
+            -v "$ROOT/edge/certs:/etc/letsencrypt:ro" \
+            --entrypoint sh "$NGINX_IMAGE" \
+            -c '/docker-entrypoint.d/10-render-stacks.sh && nginx -t'
+        ;;
+    certs)
+        # Первый выпуск: certbot поднимает свой сервер на 80-м порту, поэтому
+        # nginx в это время должен быть выключен. Продление идёт иначе, через
+        # webroot, и остановки не требует.
+        if [ -n "$(docker ps --filter name=^edge-nginx$ --filter status=running -q)" ]; then
+            die "edge занимает порт 80, сначала ./scribo down edge"
+        fi
+        mkdir -p "$ROOT/edge/certs" "$ROOT/edge/certbot-www"
+        for entry in $(stacks); do
+            domain=${entry#*:}
+            echo "== $domain"
+            docker run --rm -p 80:80 \
+                -v "$ROOT/edge/certs:/etc/letsencrypt" \
+                -v "$ROOT/edge/certbot-www:/var/www/certbot" \
+                "$CERTBOT_IMAGE" certonly --standalone \
+                -d "$domain" \
+                --email "$CERTBOT_EMAIL" --agree-tos --non-interactive
+        done
+        ;;
+    renew)
+        docker run --rm \
+            -v "$ROOT/edge/certs:/etc/letsencrypt" \
+            -v "$ROOT/edge/certbot-www:/var/www/certbot" \
+            "$CERTBOT_IMAGE" renew --webroot -w /var/www/certbot --quiet
+        # Перечитать сертификат может только запущенный nginx.
+        compose edge exec nginx nginx -s reload 2>/dev/null || true
+        ;;
+    *)
+        usage
+        ;;
+esac

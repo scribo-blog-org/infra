@@ -1,5 +1,6 @@
 # Проверка pull request в master. На сервер не заходит.
-# nginx -t идёт с временным сертификатом: боевой лежит только на машине.
+# Состояние машины подделывается во временном каталоге: образцы env вместо
+# секретов и самоподписанные сертификаты вместо боевых.
 
 name: PR checks
 
@@ -13,38 +14,52 @@ permissions:
 
 jobs:
   check:
-    name: Nginx
+    name: Stacks
     runs-on: ubuntu-latest
+    env:
+      SCRIBO_ROOT: ${{ github.workspace }}/.root
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: nginx -t
+      - name: Fake machine state
         run: |
-          mkdir -p certs/live/scribo-blog.duckdns.org certs/live/scribo-blog-stage.duckdns.org
-          openssl req -x509 -nodes -newkey rsa:2048 \
-            -keyout certs/live/scribo-blog.duckdns.org/privkey.pem \
-            -out certs/live/scribo-blog.duckdns.org/fullchain.pem \
-            -days 1 \
-            -subj /CN=scribo-blog.duckdns.org
-          openssl req -x509 -nodes -newkey rsa:2048 \
-            -keyout certs/live/scribo-blog-stage.duckdns.org/privkey.pem \
-            -out certs/live/scribo-blog-stage.duckdns.org/fullchain.pem \
-            -days 1 \
-            -subj /CN=scribo-blog-stage.duckdns.org
-          docker run --rm \
-            -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
-            -v "$PWD/errors:/usr/share/nginx/errors:ro" \
-            -v "$PWD/certs:/etc/letsencrypt:ro" \
-            nginx:1.27-alpine nginx -t
+          set -eu
+          mkdir -p "$SCRIBO_ROOT"/edge "$SCRIBO_ROOT"/prod/env "$SCRIBO_ROOT"/stage/env
+          cp env/edge.env.example "$SCRIBO_ROOT/edge/stack.env"
+          for stack in prod stage; do
+            cp env/stack.env.example "$SCRIBO_ROOT/$stack/stack.env"
+            for service in backend frontend socket; do
+              cp "env/$service.env.example" "$SCRIBO_ROOT/$stack/env/$service.env"
+            done
+          done
+          # Стейдж отличается от прода только этим файлом, так же как на машине.
+          sed -i \
+            -e 's/^STACK=prod/STACK=stage/' \
+            -e 's/^COMPOSE_PROJECT_NAME=scribo-prod/COMPOSE_PROJECT_NAME=scribo-stage/' \
+            -e 's/^IMAGE_TAG=latest/IMAGE_TAG=staging/' \
+            -e 's/^COMPOSE_PROFILES=backup/COMPOSE_PROFILES=/' \
+            "$SCRIBO_ROOT/stage/stack.env"
+          # Домены берём из того же образца, что и nginx, чтобы списки не разъезжались.
+          for entry in $(sed -n 's/^STACKS=//p' "$SCRIBO_ROOT/edge/stack.env"); do
+            domain=${entry#*:}
+            dir="$SCRIBO_ROOT/edge/certs/live/$domain"
+            mkdir -p "$dir"
+            openssl req -x509 -nodes -newkey rsa:2048 \
+              -keyout "$dir/privkey.pem" -out "$dir/fullchain.pem" \
+              -days 1 -subj "/CN=$domain"
+          done
 
       - name: Compose config
         run: |
-          cp env/backend.env.example env/backend.env
-          cp env/frontend.env.example env/frontend.env
-          cp env/socket.env.example env/socket.env
-          cp env/stage/backend.env.example env/stage/backend.env
-          cp env/stage/frontend.env.example env/stage/frontend.env
-          cp env/stage/socket.env.example env/stage/socket.env
-          docker compose config --quiet
-          docker compose -f docker-compose.stage.yml config --quiet
+          set -eu
+          for target in prod stage edge; do
+            ./scribo config "$target" >/dev/null
+          done
+          # Приписки окружений должны попасть в имена контейнеров: по ним nginx
+          # различает стеки, и пустое значение слепило бы их в один.
+          ./scribo config prod | grep -q 'container_name: prod-backend'
+          ./scribo config stage | grep -q 'container_name: stage-backend'
+
+      - name: Nginx render and test
+        run: ./scribo check

@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Дамп базы из env/backend.env. Один контейнер mongo:7, compose не вызывается.
+# Дамп базы окружения. Один контейнер mongo:7, compose не вызывается.
 # URI лежит в файле 0600, mongodump читает его через --config: пароля нет ни в логе, ни в argv.
+#
+#   ./backup-mongo.sh [prod|stage]    по умолчанию prod
+#
+# Временная мера, пока база в Atlas. По задаче infra#10 её заменит сервис
+# backup внутри прод-стека, с файлами и манифестом.
 set -euo pipefail
 set +x
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${ROOT}/env/backend.env"
-BACKUP_ROOT="${ROOT}/backups"
+STACK="${1:-prod}"
+ROOT="${SCRIBO_ROOT:-/srv/scribo}"
+ENV_FILE="${ROOT}/${STACK}/env/backend.env"
+BACKUP_ROOT="${ROOT}/${STACK}/backups"
 DAILY="${BACKUP_ROOT}/daily"
 WEEKLY="${BACKUP_ROOT}/weekly"
 STAMP="$(date +%F)"
@@ -96,7 +102,7 @@ redact() {
 }
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "backup-mongo: нет файла env/backend.env" >&2
+  echo "backup-mongo: нет файла ${ENV_FILE}" >&2
   exit 1
 fi
 
@@ -106,7 +112,7 @@ DB_HOST="$(normalize_host "$(read_env DB_HOST)")"
 DB_NAME="$(read_env DB_NAME)"
 
 if [[ -z "$DB_USER" || -z "$DB_PASSWORD" || -z "$DB_HOST" || -z "$DB_NAME" ]]; then
-  echo "backup-mongo: в env/backend.env нужны DB_USER, DB_PASSWORD, DB_HOST, DB_NAME" >&2
+  echo "backup-mongo: в ${ENV_FILE} нужны DB_USER, DB_PASSWORD, DB_HOST, DB_NAME" >&2
   exit 1
 fi
 
