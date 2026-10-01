@@ -2,7 +2,7 @@
 # Пишет по одному конфигу на окружение из stack.conf.template.
 # Запускается штатным entrypoint образа nginx до старта самого nginx.
 #
-# STACKS="prod:scribo-blog.duckdns.org stage:scribo-blog-stage.duckdns.org"
+# STACKS="prod:scribo.pp.ua stage:scribo-stage.pp.ua"
 set -eu
 
 template=/etc/nginx/stack.conf.template

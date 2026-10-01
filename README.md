@@ -9,7 +9,7 @@
 | `socket` | WebSocket: сообщения и присутствие |
 | `infra` | Compose, nginx, сертификат, скрипты на сервере |
 
-Сайт: `https://scribo-blog.duckdns.org`. Стейдж: `https://scribo-blog-stage.duckdns.org`. Оба имени смотрят на один IP. Снаружи открыты только порты 80 и 443.
+Сайт: `https://scribo.pp.ua`. Стейдж: `https://scribo-stage.pp.ua`. Оба имени смотрят на один IP. Снаружи открыты только порты 80 и 443.
 
 Машина: Oracle Cloud Free Tier, `VM.Standard.A1.Flex`, 2 OCPU и 12 ГБ. Процессор Ampere, то есть **aarch64**: образы приложений собираются на ARM-раннерах GitHub, иначе на этой машине они не запускаются.
 
@@ -40,7 +40,7 @@
 | `/ws` | `<окружение>-socket:3002` |
 | `/.well-known/acme-challenge/` | файлы certbot, только по HTTP |
 
-Порты 3000, 3001 и 3002 наружу не опубликованы. Проверить API снаружи можно только через домен: `https://scribo-blog.duckdns.org/api/...` и `.../health`.
+Порты 3000, 3001 и 3002 наружу не опубликованы. Проверить API снаружи можно только через домен: `https://scribo.pp.ua/api/...` и `.../health`.
 
 Фронт не ходит на backend по локальному порту. В браузере `NEXT_PUBLIC_APP_API_URL` равен адресу сайта, к нему дописывается `/api/...`, и запрос снова приходит на nginx. Сокет так же: `wss://<домен>/ws`.
 
@@ -98,7 +98,7 @@ Compose в `env/*.env` не заглядывает, он их только пе�
 В репозитории лежит один `edge/stack.conf.template` — описание одного окружения. При старте контейнера скрипт `edge/entrypoint.d/10-render-stacks.sh` проходит по списку `STACKS` и пишет по файлу на окружение в `/etc/nginx/conf.d/`. Сам `edge/nginx.conf` содержит только блок `http` и `include`.
 
 ```
-STACKS=prod:scribo-blog.duckdns.org stage:scribo-blog-stage.duckdns.org
+STACKS=prod:scribo.pp.ua stage:scribo-stage.pp.ua
 ```
 
 Добавить окружение или домен — это запись в этой строке, а не копия сотни строк конфига. Приписка до двоеточия должна совпадать со `STACK` окружения, иначе nginx будет искать контейнеры, которых нет.
@@ -151,8 +151,8 @@ Backend пишет в Mongo и S3, шлёт почту и публикует с�
 браузер
   │  HTTPS / WSS
   ▼
-edge-nginx ──┬── scribo-blog.duckdns.org       → prod-frontend / prod-backend / prod-socket
-             └── scribo-blog-stage.duckdns.org → stage-frontend / stage-backend / stage-socket
+edge-nginx ──┬── scribo.pp.ua       → prod-frontend / prod-backend / prod-socket
+             └── scribo-stage.pp.ua → stage-frontend / stage-backend / stage-socket
                                                    │
                                                    ├── MongoDB Atlas, S3, почта
                                                    └── redis pub/sub внутри своего стека
@@ -178,7 +178,7 @@ cd /srv/scribo/infra
 Скрипт собирает за вас команду `docker compose` с нужными `--project-directory` и `--env-file`. Состояние ищется в `/srv/scribo`, это переопределяется переменной `SCRIBO_ROOT` (так работают локальные проверки и CI).
 
 ```bash
-curl -fsSI https://scribo-blog.duckdns.org/health
+curl -fsSI https://scribo.pp.ua/health
 ```
 
 ## Сборка и выкладка
@@ -249,7 +249,7 @@ sudo sh scripts/vm-setup.sh
 Три вещи, которых скрипт сделать не может и без которых ничего не поднимется:
 
 - Открыть 80 и 443 в Security List у VCN. Правила `iptables` на хосте этого не заменяют, нужны оба уровня.
-- **Зарезервировать публичный IP.** По умолчанию адрес ephemeral и меняется при stop/start инстанса, а от него зависят и DuckDNS, и список доступа Atlas.
+- **Зарезервировать публичный IP.** По умолчанию адрес ephemeral и меняется при stop/start инстанса, а от него зависят и DNS-записи доменов, и список доступа Atlas.
 - Добавить исходящий IP машины в IP Access List у MongoDB Atlas. Backend при старте пингует базу и при неудаче завершается с кодом 1, то есть уходит в рестарт и никогда не становится healthy.
 
 ## Что переживает перезагрузку
