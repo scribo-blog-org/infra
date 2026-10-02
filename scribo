@@ -64,7 +64,7 @@ compose() {
     case $target in
         prod | stage)
             [ -f "$ROOT/$target/stack.env" ] || die "нет $ROOT/$target/stack.env"
-            docker compose \
+            SCRIBO_INFRA_DIR=$INFRA_DIR docker compose \
                 --project-directory "$ROOT/$target" \
                 --env-file "$ROOT/$target/stack.env" \
                 -f "$INFRA_DIR/compose.yml" \

@@ -47,6 +47,11 @@ services:
         condition: service_healthy
       socket:
         condition: service_healthy
+      # Свой Mongo есть не у всех окружений (профиль mongo в stack.env), поэтому
+      # зависимость необязательная: без профиля сервис не поднимается и не ждётся.
+      mongo:
+        condition: service_healthy
+        required: false
     expose:
       - "3001"
     restart: unless-stopped
@@ -63,6 +68,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+        required: false
     expose:
       - "3002"
     restart: unless-stopped
@@ -88,6 +96,40 @@ services:
       interval: 5s
       timeout: 2s
       retries: 15
+    restart: unless-stopped
+
+  # База в контейнере. Включается профилем: в stack.env окружения строка
+  # COMPOSE_PROFILES=mongo. Без неё сервис не поднимается, и окружение остаётся
+  # на внешней базе (Atlas), как прод. Порты наружу не публикуются: до базы
+  # доходят только контейнеры этого окружения по имени сервиса `mongo`.
+  mongo:
+    profiles: ["mongo"]
+    # 7.0, а не 8.0: на Linux 6.19 и новее (так у нашей виртуалки) mongod 8.0 и выше
+    # не стартует из-за несовместимости TCMalloc с ядром (SERVER-121912).
+    image: mongo:${MONGO_VERSION:-7.0}
+    container_name: ${STACK:?STACK is required}-mongo
+    mem_limit: ${MEM_MONGO:-1g}
+    env_file:
+      - ./env/mongo.env
+    # Кеш WiredTiger по умолчанию берёт половину памяти хоста и игнорирует
+    # потолок контейнера, поэтому задаём его явно.
+    command:
+      - mongod
+      - --wiredTigerCacheSizeGB
+      - ${MONGO_CACHE_GB:-0.5}
+    # Данные в папке окружения на хосте, как загрузки и бекапы. Владелец папки
+    # uid 999 (пользователь mongodb внутри образа), создаёт её vm-setup.sh.
+    # Скрипт инициализации берётся из этого репозитория: ./scribo передаёт путь
+    # в SCRIBO_INFRA_DIR.
+    volumes:
+      - ./mongo:/data/db
+      - ${SCRIBO_INFRA_DIR:-/srv/scribo/infra}/mongo/init-app-user.js:/docker-entrypoint-initdb.d/10-app-user.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     restart: unless-stopped
 
 # Своя сеть на окружение. nginx из стека edge подключается к обеим и ходит

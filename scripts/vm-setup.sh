@@ -86,6 +86,13 @@ for dir in prod stage; do
     install -d -m 755 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/uploads"
     install -d -m 700 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/backups"
 done
+# Данные Mongo (нужны окружениям с COMPOSE_PROFILES=mongo). Пишет процесс mongod
+# внутри контейнера, пользователь mongodb с uid 999, поэтому владелец числовой.
+# Папку читать с хоста нельзя никому, кроме root: в ней вся база.
+MONGO_UID=999
+for dir in prod stage; do
+    install -d -m 700 -o "$MONGO_UID" -g "$MONGO_UID" "$ROOT/$dir/mongo"
+done
 install -d -m 2775 -o "$ADMIN_USER" -g docker "$ROOT/edge/certs" "$ROOT/edge/certbot-www"
 
 say "Репозиторий"
@@ -147,6 +154,7 @@ cat <<TEXT
        $ROOT/stage/stack.env, $ROOT/stage/env/*.env
        $ROOT/edge/stack.env
   3. Открыть 80 и 443 в Security List у VCN — iptables на хосте этого не делает
-  4. Добавить исходящий IP этой машины в IP Access List у MongoDB Atlas
+  4. Если окружение на внешней базе (Atlas), добавить исходящий IP этой машины в её IP Access List.
+     Окружениям со своим Mongo (COMPOSE_PROFILES=mongo) это не нужно.
   5. cd $ROOT/infra && ./scribo certs && ./scribo up prod && ./scribo up stage && ./scribo up edge
 TEXT

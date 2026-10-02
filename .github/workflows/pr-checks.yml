@@ -29,7 +29,7 @@ jobs:
           cp env/edge.env.example "$SCRIBO_ROOT/edge/stack.env"
           for stack in prod stage; do
             cp env/stack.env.example "$SCRIBO_ROOT/$stack/stack.env"
-            for service in backend frontend socket; do
+            for service in backend frontend socket mongo; do
               cp "env/$service.env.example" "$SCRIBO_ROOT/$stack/env/$service.env"
             done
           done
@@ -66,6 +66,14 @@ jobs:
           ./scribo config prod | grep -q "source: $SCRIBO_ROOT/prod/uploads"
           ./scribo config stage | grep -q "source: $SCRIBO_ROOT/stage/backups"
           ./scribo config edge | grep -q "source: $SCRIBO_ROOT/stage/uploads"
+          # Mongo в контейнере поднимается только профилем: без него в окружении
+          # его нет и mongo.env не требуется, с профилем появляется контейнер
+          # с папкой данных окружения и скриптом инициализации из этого репозитория.
+          ./scribo config prod | grep -q 'container_name: prod-mongo' && exit 1
+          sed -i 's/^# COMPOSE_PROFILES=mongo/COMPOSE_PROFILES=mongo/' "$SCRIBO_ROOT/stage/stack.env"
+          ./scribo config stage | grep -q 'container_name: stage-mongo'
+          ./scribo config stage | grep -q "source: $SCRIBO_ROOT/stage/mongo"
+          ./scribo config stage | grep -q 'init-app-user.js'
 
       - name: Nginx render and test
         run: ./scribo check
