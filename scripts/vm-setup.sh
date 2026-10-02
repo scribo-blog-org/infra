@@ -76,8 +76,16 @@ done
 for dir in prod stage; do
     install -d -m 2750 -o "$ADMIN_USER" -g docker "$ROOT/$dir/env"
 done
-# Дампы: только владелец. backup-mongo.sh дополнительно ставит 700 сам.
-install -d -m 700 -o "$ADMIN_USER" -g "$ADMIN_USER" "$ROOT/prod/backups"
+# Загрузки и бекапы монтируются в backend как папки хоста. Пишет туда процесс
+# внутри контейнера, пользователь node с uid 1000, поэтому владелец числовой,
+# а не scribo. Загрузки читает nginx из edge, ему нужно 755. Архивы бекапов
+# содержат всю базу, поэтому 700: прочитать их с хоста можно только через sudo
+# или скачав из админки.
+NODE_UID=1000
+for dir in prod stage; do
+    install -d -m 755 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/uploads"
+    install -d -m 700 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/backups"
+done
 install -d -m 2775 -o "$ADMIN_USER" -g docker "$ROOT/edge/certs" "$ROOT/edge/certbot-www"
 
 say "Репозиторий"
@@ -116,7 +124,6 @@ netfilter-persistent save
 iptables -L INPUT -n | grep -E 'dpt:(80|443)' || true
 
 say "Крон"
-# Дамп после продления, чтобы задачи не лезли в docker одновременно.
 add_cron() {
     marker=$1
     line=$2
@@ -128,7 +135,6 @@ add_cron() {
     fi
 }
 add_cron "scribo renew" "0 3 * * * $ROOT/infra/scribo renew"
-add_cron "backup-mongo.sh" "15 4 * * * $ROOT/infra/backup-mongo.sh prod"
 crontab -u "$ADMIN_USER" -l
 
 say "Готово"

@@ -58,16 +58,6 @@ ensure_networks() {
     done
 }
 
-# Тома загрузок: их наполняет backend, а edge читает. Как и сети, заводятся заранее.
-ensure_volumes() {
-    for entry in $(stacks); do
-        vol=scribo-${entry%%:*}-uploads
-        if ! docker volume inspect "$vol" >/dev/null 2>&1; then
-            docker volume create "$vol" >/dev/null
-        fi
-    done
-}
-
 compose() {
     target=$1
     shift
@@ -82,7 +72,7 @@ compose() {
             ;;
         edge)
             [ -f "$ROOT/edge/stack.env" ] || die "нет $ROOT/edge/stack.env"
-            docker compose \
+            SCRIBO_ROOT=$ROOT docker compose \
                 --env-file "$ROOT/edge/stack.env" \
                 -f "$INFRA_DIR/edge/compose.yml" \
                 "$@"
@@ -120,7 +110,6 @@ case $command in
         shift
         if [ "$target" = edge ]; then
             ensure_networks
-            ensure_volumes
         fi
         # Для prod и stage всегда качаем образы заново: тег latest или staging
         # мог обновиться в GHCR, а обычный up берёт то, что уже лежит на диске.

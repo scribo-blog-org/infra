@@ -35,8 +35,13 @@ services:
       # Внутри стека сервисы зовут друг друга по имени сервиса, без приписки.
       REDIS_URL: redis://redis:6379
       UPLOADS_DIR: /app/uploads
+      BACKUPS_DIR: /app/backups
+    # Папки окружения на хосте. Путь `./` считается от --project-directory,
+    # то есть от /srv/scribo/<окружение>, поэтому прод и стейдж не пересекаются
+    # и приписка STACK здесь не нужна. Создаёт их scripts/vm-setup.sh.
     volumes:
-      - uploads:/app/uploads
+      - ./uploads:/app/uploads
+      - ./backups:/app/backups
     depends_on:
       redis:
         condition: service_healthy
@@ -84,11 +89,6 @@ services:
       timeout: 2s
       retries: 15
     restart: unless-stopped
-
-# Загруженные картинки. Том на окружение, переживает пересоздание контейнера.
-volumes:
-  uploads:
-    name: scribo-${STACK:?STACK is required}-uploads
 
 # Своя сеть на окружение. nginx из стека edge подключается к обеим и ходит
 # в сервисы по именам контейнеров: prod-backend:3001, stage-backend:3001.
