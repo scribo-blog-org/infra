@@ -15,6 +15,11 @@ services:
     mem_limit: ${MEM_FRONTEND:-512m}
     env_file:
       - ./env/frontend.env
+    depends_on:
+      backend:
+        condition: service_healthy
+      socket:
+        condition: service_healthy
     expose:
       - "3000"
     restart: unless-stopped
@@ -29,8 +34,13 @@ services:
       PORT: "3001"
       # Внутри стека сервисы зовут друг друга по имени сервиса, без приписки.
       REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       redis:
+        condition: service_healthy
+      socket:
         condition: service_healthy
     expose:
       - "3001"
@@ -74,6 +84,11 @@ services:
       timeout: 2s
       retries: 15
     restart: unless-stopped
+
+# Загруженные картинки. Том на окружение, переживает пересоздание контейнера.
+volumes:
+  uploads:
+    name: scribo-${STACK:?STACK is required}-uploads
 
 # Своя сеть на окружение. nginx из стека edge подключается к обеим и ходит
 # в сервисы по именам контейнеров: prod-backend:3001, stage-backend:3001.

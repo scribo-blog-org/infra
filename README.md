@@ -13,6 +13,35 @@
 
 Машина: Oracle Cloud Free Tier, `VM.Standard.A1.Flex`, 2 OCPU и 12 ГБ. Процессор Ampere, то есть **aarch64**: образы приложений собираются на ARM-раннерах GitHub, иначе на этой машине они не запускаются.
 
+## Команды на сервере
+
+Всё через `infra/scribo`, из любого каталога. Цель — `prod`, `stage` или `edge`.
+
+```bash
+./scribo up prod          # весь прод со свежими образами из GHCR
+./scribo down prod        # убрать контейнеры прода; тома с загрузками остаются
+./scribo up stage         # то же для стейджа
+./scribo up prod backend  # один сервис
+./scribo restart prod backend
+./scribo logs prod backend
+./scribo up all           # prod, stage, затем edge, всё со свежими образами
+./scribo down all         # edge, stage, prod
+./scribo ps               # состояние всех трёх
+```
+
+## Локально
+
+Из `infra/local`, обычными командами compose (образы собираются из соседних каталогов `backend`, `socket`, `frontend`):
+
+```bash
+docker compose up -d --build      # всё
+docker compose down               # остановить всё, данные Mongo остаются
+docker compose up -d redis mongo  # только нужные сервисы
+docker compose down -v            # и стереть данные
+```
+
+`down` не трогает тома, так что картинки переживают остановку. Окружение без запущенного `edge` работает, но снаружи недоступно.
+
 ## Три стека
 
 На машине три независимых проекта Compose.
@@ -79,7 +108,7 @@
 | Файл | Кто читает | Что внутри |
 | --- | --- | --- |
 | `<окружение>/stack.env` | сам `docker compose`, на хосте | подстановки `${...}` в `compose.yml`: `STACK`, `IMAGE_TAG`, `COMPOSE_PROJECT_NAME`, `COMPOSE_PROFILES`, лимиты памяти |
-| `<окружение>/env/*.env` | контейнеры | `DB_HOST`, `JWT_PRIVATE_KEY`, `AWS_*`, `NEXT_PUBLIC_*` |
+| `<окружение>/env/*.env` | контейнеры | `DB_HOST`, `JWT_PRIVATE_KEY`, `NEXT_PUBLIC_*` |
 
 Compose в `env/*.env` не заглядывает, он их только передаёт внутрь. Подстановка `${STACK}` берётся исключительно из `stack.env`.
 
@@ -127,7 +156,7 @@ docker compose exec nginx cat /etc/nginx/conf.d/prod.conf
 
 ## Что где хранится
 
-Исходников приложений на машине нет. База — MongoDB Atlas, файлы постов — S3. Оба окружения пока делят один кластер и один бакет, различаются только `DB_NAME`. Redis живёт только в compose, без снимков и AOF: после пересоздания контейнера очередь и присутствие пустые, это нормально.
+Исходников приложений на машине нет. База — MongoDB Atlas, файлы постов лежат в томе `scribo-<окружение>-uploads` на этой машине и отдаются nginx из edge напрямую (`/uploads/`, только чтение, мимо Node). Оба окружения пока делят один кластер, различаются только `DB_NAME`; загрузки у каждого свои. Redis живёт только в compose, без снимков и AOF: после пересоздания контейнера очередь и присутствие пустые, это нормально.
 
 Перевод базы и файлов на саму машину — следующие шаги задачи `infra#10`.
 
@@ -143,7 +172,7 @@ docker compose exec nginx cat /etc/nginx/conf.d/prod.conf
 
 ## Как сервисы связаны
 
-Backend пишет в Mongo и S3, шлёт почту и публикует события в Redis-канал `scribo:events`. Socket подписан на этот канал и на канал присутствия, проверяет access JWT публичным ключом RS256 и читает участников беседы из той же Mongo, но сам сообщения не создаёт: создание остаётся HTTP-запросом к backend.
+Backend пишет в Mongo и в том загрузок, шлёт почту и публикует события в Redis-канал `scribo:events`. Socket подписан на этот канал и на канал присутствия, проверяет access JWT публичным ключом RS256 и читает участников беседы из той же Mongo, но сам сообщения не создаёт: создание остаётся HTTP-запросом к backend.
 
 Каналы Redis у прода и стейджа называются одинаково. Это безопасно: процессы ходят в разные контейнеры и чужих сообщений не видят.
 
@@ -154,7 +183,7 @@ Backend пишет в Mongo и S3, шлёт почту и публикует с�
 edge-nginx ──┬── scribo.pp.ua       → prod-frontend / prod-backend / prod-socket
              └── scribo-stage.pp.ua → stage-frontend / stage-backend / stage-socket
                                                    │
-                                                   ├── MongoDB Atlas, S3, почта
+                                                   ├── MongoDB Atlas, том загрузок, почта
                                                    └── redis pub/sub внутри своего стека
 ```
 

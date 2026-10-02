@@ -34,6 +34,17 @@ server {
         proxy_read_timeout 3600s;
     }
 
+    # Загруженные картинки nginx читает прямо с тома backend, Node их не видит.
+    # Имя файла аватара не меняется при замене, поэтому no-cache с ETag.
+    location /uploads/ {
+        alias /srv/uploads/${STACK}/;
+        autoindex off;
+        etag on;
+        add_header Cache-Control "public, no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Cross-Origin-Resource-Policy "cross-origin" always;
+    }
+
     location /api/ {
         set $backend_upstream ${STACK}-backend:3001;
         proxy_pass http://$backend_upstream;
