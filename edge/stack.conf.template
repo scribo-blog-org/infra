@@ -45,6 +45,19 @@ server {
         add_header Cross-Origin-Resource-Policy "cross-origin" always;
     }
 
+    # Загрузка своего бекапа: архивы больше общего лимита в 20 МБ. Тело идёт в
+    # backend потоком, без буферизации в nginx, и проверка большого файла
+    # занимает время. Сам размер ограничивает BACKUP_UPLOAD_MAX_MB в backend.
+    location = /api/backups/upload {
+        set $backend_upstream ${STACK}-backend:3001;
+        proxy_pass http://$backend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        client_max_body_size 4g;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+    }
+
     location /api/ {
         set $backend_upstream ${STACK}-backend:3001;
         proxy_pass http://$backend_upstream;
