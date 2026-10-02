@@ -38,8 +38,9 @@ jobs:
             -e 's/^STACK=prod/STACK=stage/' \
             -e 's/^COMPOSE_PROJECT_NAME=scribo-prod/COMPOSE_PROJECT_NAME=scribo-stage/' \
             -e 's/^IMAGE_TAG=latest/IMAGE_TAG=staging/' \
-            -e 's/^COMPOSE_PROFILES=backup/COMPOSE_PROFILES=/' \
             "$SCRIBO_ROOT/stage/stack.env"
+          sed -i 's/^BACKUP_ENABLED=true/BACKUP_ENABLED=false/' \
+            "$SCRIBO_ROOT/stage/env/backend.env"
           # Домены берём из того же образца, что и nginx, чтобы списки не разъезжались.
           for entry in $(sed -n 's/^STACKS=//p' "$SCRIBO_ROOT/edge/stack.env"); do
             domain=${entry#*:}
@@ -60,6 +61,11 @@ jobs:
           # различает стеки, и пустое значение слепило бы их в один.
           ./scribo config prod | grep -q 'container_name: prod-backend'
           ./scribo config stage | grep -q 'container_name: stage-backend'
+          # Загрузки и бекапы у окружений свои: путь считается от каталога окружения.
+          # Загрузки и бекапы у окружений свои: путь считается от каталога окружения.
+          ./scribo config prod | grep -q "source: $SCRIBO_ROOT/prod/uploads"
+          ./scribo config stage | grep -q "source: $SCRIBO_ROOT/stage/backups"
+          ./scribo config edge | grep -q "source: $SCRIBO_ROOT/stage/uploads"
 
       - name: Nginx render and test
         run: ./scribo check

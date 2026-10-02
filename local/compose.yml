@@ -1,0 +1,109 @@
+# Локальная среда на Mac: всё собирается из соседних каталогов репозиториев
+# (backend, socket, frontend лежат рядом с infra). Запускать из этого каталога.
+#
+#   docker compose up -d --build      # всё: mongo, redis, backend, socket, frontend
+#   docker compose down               # остановить всё, данные Mongo остаются
+#   docker compose up -d redis mongo  # только нужные сервисы
+#   docker compose up -d --build backend
+#   docker compose logs -f backend
+#   docker compose down -v            # то же и стереть данные Mongo
+#
+# Секреты берутся из backend/.env, socket/.env и frontend/.env.local. Адреса
+# Mongo и Redis ниже перекрывают значения из них: внутри Docker это имена сервисов.
+
+name: scribo
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: scribo-mongo
+    ports:
+      - "127.0.0.1:27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: scribo
+      MONGO_INITDB_ROOT_PASSWORD: scribo
+      MONGO_INITDB_DATABASE: scribo
+    volumes:
+      - scribo-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: scribo-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ../../backend
+    container_name: scribo-backend
+    env_file: ../../backend/.env
+    environment:
+      PORT: "3001"
+      MONGODB_URI: mongodb://scribo:scribo@mongo:27017/scribo?authSource=admin
+      REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /app/uploads
+      BACKUPS_DIR: /app/backups
+      BACKUP_ENABLED: "true"
+      # Образ собран с NODE_ENV=production, где /uploads отдаёт nginx. Здесь его нет.
+      SERVE_UPLOADS: "true"
+    volumes:
+      - scribo-uploads:/app/uploads
+      - scribo-backups:/app/backups
+    ports:
+      - "127.0.0.1:3001:3001"
+      # Порт frontend опубликован здесь, потому что frontend делит с backend сеть, см. ниже.
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  socket:
+    build: ../../socket
+    container_name: scribo-socket
+    env_file: ../../socket/.env
+    environment:
+      PORT: "3002"
+      MONGODB_URI: mongodb://scribo:scribo@mongo:27017/scribo?authSource=admin
+      REDIS_URL: redis://redis:6379
+      DB_NAME: scribo
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Frontend ходит на API и из браузера, и со своего сервера по одному адресу
+  # NEXT_PUBLIC_APP_API_URL=http://localhost:3001. Внутри контейнера localhost —
+  # это он сам, поэтому frontend живёт в сетевом пространстве backend: тогда
+  # localhost:3001 достучится до API и там, и там.
+  frontend:
+    build: ../../frontend
+    container_name: scribo-frontend
+    env_file: ../../frontend/.env.local
+    network_mode: "service:backend"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  scribo-mongo-data:
+  scribo-uploads:
+  scribo-backups:

@@ -15,6 +15,11 @@ services:
     mem_limit: ${MEM_FRONTEND:-512m}
     env_file:
       - ./env/frontend.env
+    depends_on:
+      backend:
+        condition: service_healthy
+      socket:
+        condition: service_healthy
     expose:
       - "3000"
     restart: unless-stopped
@@ -29,8 +34,18 @@ services:
       PORT: "3001"
       # Внутри стека сервисы зовут друг друга по имени сервиса, без приписки.
       REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /app/uploads
+      BACKUPS_DIR: /app/backups
+    # Папки окружения на хосте. Путь `./` считается от --project-directory,
+    # то есть от /srv/scribo/<окружение>, поэтому прод и стейдж не пересекаются
+    # и приписка STACK здесь не нужна. Создаёт их scripts/vm-setup.sh.
+    volumes:
+      - ./uploads:/app/uploads
+      - ./backups:/app/backups
     depends_on:
       redis:
+        condition: service_healthy
+      socket:
         condition: service_healthy
     expose:
       - "3001"

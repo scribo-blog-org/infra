@@ -30,6 +30,10 @@ services:
       - ./entrypoint.d/10-render-stacks.sh:/docker-entrypoint.d/10-render-stacks.sh:ro
       - ${STATE_DIR:?STATE_DIR is required}/certs:/etc/letsencrypt:ro
       - ${STATE_DIR:?STATE_DIR is required}/certbot-www:/var/www/certbot:ro
+      # Загрузки окружений, только на чтение. Папки наполняет backend, путь к
+      # корню передаёт скрипт scribo.
+      - ${SCRIBO_ROOT:?SCRIBO_ROOT is required, run through ./scribo}/prod/uploads:/srv/uploads/prod:ro
+      - ${SCRIBO_ROOT:?SCRIBO_ROOT is required, run through ./scribo}/stage/uploads:/srv/uploads/stage:ro
     networks:
       - prod
       - stage

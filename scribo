@@ -17,7 +17,7 @@ usage() {
     cat >&2 <<'TEXT'
 usage: scribo <команда> [цель] [аргументы]
 
-  up <цель> [сервис...]      поднять
+  up <цель> [сервис...]      поднять со свежими образами; цель all — prod, stage, edge
   down <цель>                убрать контейнеры
   pull <цель> [сервис...]    скачать образы
   restart <цель> [сервис...]
@@ -29,7 +29,7 @@ usage: scribo <команда> [цель] [аргументы]
   certs                      первый выпуск сертификатов, edge должен быть выключен
   renew                      продление, работает при поднятом edge
 
-цели: prod, stage, edge
+цели: prod, stage, edge, all (all — для up, down, pull, restart)
 TEXT
     exit 1
 }
@@ -72,7 +72,7 @@ compose() {
             ;;
         edge)
             [ -f "$ROOT/edge/stack.env" ] || die "нет $ROOT/edge/stack.env"
-            docker compose \
+            SCRIBO_ROOT=$ROOT docker compose \
                 --env-file "$ROOT/edge/stack.env" \
                 -f "$INFRA_DIR/edge/compose.yml" \
                 "$@"
@@ -87,6 +87,22 @@ command=${1:-}
 [ -n "$command" ] || usage
 shift
 
+# all: та же команда по очереди для каждой цели. Порядок важен: поднимаем
+# окружения до edge, выключаем edge первым, чтобы он не показывал ошибки.
+if [ "${1:-}" = all ]; then
+    case $command in
+        up | pull | restart) order="prod stage edge" ;;
+        down) order="edge stage prod" ;;
+        *) die "all поддерживается для up, down, pull, restart" ;;
+    esac
+    shift
+    for target in $order; do
+        echo "== $target"
+        "$0" "$command" "$target" "$@"
+    done
+    exit 0
+fi
+
 case $command in
     up)
         [ -n "${1:-}" ] || usage
@@ -95,7 +111,12 @@ case $command in
         if [ "$target" = edge ]; then
             ensure_networks
         fi
-        compose "$target" up -d "$@"
+        # Для prod и stage всегда качаем образы заново: тег latest или staging
+        # мог обновиться в GHCR, а обычный up берёт то, что уже лежит на диске.
+        case $target in
+            prod | stage) compose "$target" up -d --pull always "$@" ;;
+            *) compose "$target" up -d "$@" ;;
+        esac
         ;;
     down | pull | restart | logs | config)
         [ -n "${1:-}" ] || usage
