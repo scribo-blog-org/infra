@@ -104,7 +104,9 @@ services:
   # доходят только контейнеры этого окружения по имени сервиса `mongo`.
   mongo:
     profiles: ["mongo"]
-    image: mongo:${MONGO_VERSION:-8.0}
+    # 7.0, а не 8.0: на Linux 6.19 и новее (так у нашей виртуалки) mongod 8.0 и выше
+    # не стартует из-за несовместимости TCMalloc с ядром (SERVER-121912).
+    image: mongo:${MONGO_VERSION:-7.0}
     container_name: ${STACK:?STACK is required}-mongo
     mem_limit: ${MEM_MONGO:-1g}
     env_file:
