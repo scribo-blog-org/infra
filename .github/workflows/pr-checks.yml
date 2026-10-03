@@ -1,6 +1,3 @@
-# Проверка pull request в master. На сервер не заходит.
-# Состояние машины подделывается во временном каталоге: образцы env вместо
-# секретов и самоподписанные сертификаты вместо боевых.
 
 name: PR checks
 
@@ -34,7 +31,6 @@ jobs:
               cp "env/$service.env.example" "$SCRIBO_ROOT/$stack/env/$service.env"
             done
           done
-          # Стейдж отличается от прода только этим файлом, так же как на машине.
           sed -i \
             -e 's/^STACK=prod/STACK=stage/' \
             -e 's/^COMPOSE_PROJECT_NAME=scribo-prod/COMPOSE_PROJECT_NAME=scribo-stage/' \
@@ -42,7 +38,6 @@ jobs:
             "$SCRIBO_ROOT/stage/stack.env"
           sed -i 's/^BACKUP_ENABLED=true/BACKUP_ENABLED=false/' \
             "$SCRIBO_ROOT/stage/env/backend.env"
-          # Домены берём из того же образца, что и nginx, чтобы списки не разъезжались.
           for entry in $(sed -n 's/^STACKS=//p' "$SCRIBO_ROOT/edge/stack.env"); do
             domain=${entry#*:}
             dir="$SCRIBO_ROOT/edge/certs/live/$domain"
@@ -58,18 +53,11 @@ jobs:
           for target in prod stage edge; do
             ./scribo config "$target" >/dev/null
           done
-          # Приписки окружений должны попасть в имена контейнеров: по ним nginx
-          # различает стеки, и пустое значение слепило бы их в один.
           ./scribo config prod | grep -q 'container_name: prod-backend'
           ./scribo config stage | grep -q 'container_name: stage-backend'
-          # Загрузки и бекапы у окружений свои: путь считается от каталога окружения.
-          # Загрузки и бекапы у окружений свои: путь считается от каталога окружения.
           ./scribo config prod | grep -q "source: $SCRIBO_ROOT/prod/uploads"
           ./scribo config stage | grep -q "source: $SCRIBO_ROOT/stage/backups"
           ./scribo config edge | grep -q "source: $SCRIBO_ROOT/stage/uploads"
-          # Mongo в контейнере поднимается только профилем: без него в окружении
-          # его нет и mongo.env не требуется, с профилем появляется контейнер
-          # с папкой данных окружения и скриптом инициализации из этого репозитория.
           ./scribo config prod | grep -q 'container_name: prod-mongo' && exit 1
           sed -i 's/^# COMPOSE_PROFILES=mongo/COMPOSE_PROFILES=mongo/' "$SCRIBO_ROOT/stage/stack.env"
           ./scribo config stage | grep -q 'container_name: stage-mongo'

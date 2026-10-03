@@ -1,20 +1,8 @@
 #!/bin/sh
-# Первичная настройка чистой Oracle Cloud VM (Ubuntu, ARM/aarch64).
-# Запускать от root: sudo sh scripts/vm-setup.sh
-#
-# Делает: docker с плагином compose, пользователей scribo и github-actions-deploy,
-# каталоги /srv/scribo, правила iptables для 80 и 443, крон продления сертификата.
-# Повторный запуск безопасен.
-#
-# Что остаётся руками после скрипта:
-#   - публичный ключ в /home/scribo/.ssh/authorized_keys
-#   - публичный ключ деплоя в /home/github-actions-deploy/.ssh/authorized_keys
-#   - секреты в /srv/scribo/{prod,stage}/env/ и stack.env по образцам из env/
-#   - ./scribo certs, затем ./scribo up prod stage edge
 set -eu
 
 [ "$(id -u)" = 0 ] || {
-    echo "vm-setup.sh: нужен root" >&2
+    echo "vm-setup.sh: root is required" >&2
     exit 1
 }
 
@@ -28,7 +16,7 @@ say() {
     echo "== $1"
 }
 
-say "Пакеты"
+say "Packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq ca-certificates curl git rsync iptables-persistent
@@ -51,8 +39,7 @@ systemctl enable --now docker
 docker --version
 docker compose version
 
-say "Пользователи"
-# Админ: sudo и docker. Деплой-юзер: только docker, без sudo.
+say "Users"
 for user in "$ADMIN_USER" "$DEPLOY_USER"; do
     if ! id -u "$user" >/dev/null 2>&1; then
         adduser --disabled-password --gecos "" "$user"
@@ -65,43 +52,29 @@ for user in "$ADMIN_USER" "$DEPLOY_USER"; do
 done
 usermod -aG sudo "$ADMIN_USER"
 
-say "Каталоги $ROOT"
-# Группа docker и setgid: и админ, и деплой-юзер пишут в одни каталоги, а новые
-# файлы наследуют группу. Без этого деплою пришлось бы чинить права каждый раз.
+say "Directories $ROOT"
 install -d -m 2775 -o "$ADMIN_USER" -g docker "$ROOT"
 for dir in prod stage edge; do
     install -d -m 2775 -o "$ADMIN_USER" -g docker "$ROOT/$dir"
 done
-# Секреты: группа читает, остальные нет.
 for dir in prod stage; do
     install -d -m 2750 -o "$ADMIN_USER" -g docker "$ROOT/$dir/env"
 done
-# Загрузки и бекапы монтируются в backend как папки хоста. Пишет туда процесс
-# внутри контейнера, пользователь node с uid 1000, поэтому владелец числовой,
-# а не scribo. Загрузки читает nginx из edge, ему нужно 755. Архивы бекапов
-# содержат всю базу, поэтому 700: прочитать их с хоста можно только через sudo
-# или скачав из админки.
 NODE_UID=1000
 for dir in prod stage; do
     install -d -m 755 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/uploads"
     install -d -m 700 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/backups"
 done
-# Данные Mongo (нужны окружениям с COMPOSE_PROFILES=mongo). Пишет процесс mongod
-# внутри контейнера, пользователь mongodb с uid 999, поэтому владелец числовой.
-# Папку читать с хоста нельзя никому, кроме root: в ней вся база.
 MONGO_UID=999
 for dir in prod stage; do
     install -d -m 700 -o "$MONGO_UID" -g "$MONGO_UID" "$ROOT/$dir/mongo"
 done
 install -d -m 2775 -o "$ADMIN_USER" -g docker "$ROOT/edge/certs" "$ROOT/edge/certbot-www"
 
-say "Репозиторий"
+say "Repository"
 if [ ! -d "$ROOT/infra/.git" ]; then
     sudo -u "$ADMIN_USER" git clone --quiet "$REPO_URL" "$ROOT/infra"
 fi
-# В репозиторий пишут два пользователя: админ руками и деплой из Actions.
-# sharedRepository заставляет git создавать файлы с правом записи для группы,
-# а safe.directory снимает отказ git работать в каталоге чужого владельца.
 git -C "$ROOT/infra" config core.sharedRepository group
 chgrp -R docker "$ROOT/infra"
 chmod -R g+rwX "$ROOT/infra"
@@ -110,9 +83,7 @@ for user in "$ADMIN_USER" "$DEPLOY_USER"; do
 done
 git -C "$ROOT/infra" log --oneline -1
 
-say "Порты 80 и 443"
-# В образах Oracle в цепочке INPUT уже есть REJECT, и правило, добавленное
-# через -A, окажется после него и не сработает. Вставляем перед REJECT.
+say "Ports 80 and 443"
 allow_port() {
     port=$1
     if iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
@@ -130,7 +101,7 @@ allow_port 443
 netfilter-persistent save
 iptables -L INPUT -n | grep -E 'dpt:(80|443)' || true
 
-say "Крон"
+say "Cron"
 add_cron() {
     marker=$1
     line=$2
@@ -144,18 +115,18 @@ add_cron() {
 add_cron "scribo renew" "0 3 * * * $ROOT/infra/scribo renew"
 crontab -u "$ADMIN_USER" -l
 
-say "Готово"
+say "Done"
 cat <<TEXT
-Осталось:
-  1. Ключи в /home/$ADMIN_USER/.ssh/authorized_keys и
+Still to do:
+  1. Keys in /home/$ADMIN_USER/.ssh/authorized_keys and
      /home/$DEPLOY_USER/.ssh/authorized_keys
-  2. Секреты: cp $ROOT/infra/env/*.example и заполнить
+  2. Secrets: cp $ROOT/infra/env/*.example and fill in
        $ROOT/prod/stack.env, $ROOT/prod/env/*.env
        $ROOT/stage/stack.env, $ROOT/stage/env/*.env
        $ROOT/edge/stack.env
        $ROOT/edge/env/status.env
-  3. Открыть 80 и 443 в Security List у VCN — iptables на хосте этого не делает
-  4. Если окружение на внешней базе (Atlas), добавить исходящий IP этой машины в её IP Access List.
-     Окружениям со своим Mongo (COMPOSE_PROFILES=mongo) это не нужно.
+  3. Open 80 and 443 in the VCN security list — host iptables does not do that
+  4. If an environment uses an external database (Atlas), add this machine's outbound IP to its IP access list.
+     Environments with their own Mongo (COMPOSE_PROFILES=mongo) do not need that.
   5. cd $ROOT/infra && ./scribo certs && ./scribo up prod && ./scribo up stage && ./scribo up edge
 TEXT

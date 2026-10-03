@@ -1,5 +1,3 @@
-# Выкладка описания стеков при push в master.
-# Образы приложений не качаются: их выкладывают репозитории сервисов.
 
 name: Deploy
 
@@ -20,8 +18,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Правка файла на хосте не входит в хеш сервиса Compose, поэтому nginx
-      # сам по себе не пересоздастся. Смотрим, менялось ли что-то в edge.
       - name: Edge files in this push
         id: edge
         run: |
@@ -50,12 +46,9 @@ jobs:
             set -eu
             cd /srv/scribo/infra
             git pull --ff-only
-            # Секреты и сертификаты лежат вне репозитория, git их не трогает.
             ./scribo up prod
             ./scribo up stage
             if [ "$EDGE_RECREATE" = "true" ]; then
-              # Проверка идёт на боевых сертификатах и на том конфиге,
-              # который реально соберётся в контейнере.
               ./scribo check
               ./scribo up edge --force-recreate
             fi
