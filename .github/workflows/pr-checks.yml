@@ -25,8 +25,9 @@ jobs:
       - name: Fake machine state
         run: |
           set -eu
-          mkdir -p "$SCRIBO_ROOT"/edge "$SCRIBO_ROOT"/prod/env "$SCRIBO_ROOT"/stage/env
+          mkdir -p "$SCRIBO_ROOT"/edge/env "$SCRIBO_ROOT"/prod/env "$SCRIBO_ROOT"/stage/env
           cp env/edge.env.example "$SCRIBO_ROOT/edge/stack.env"
+          cp env/status.env.example "$SCRIBO_ROOT/edge/env/status.env"
           for stack in prod stage; do
             cp env/stack.env.example "$SCRIBO_ROOT/$stack/stack.env"
             for service in backend frontend socket mongo; do
@@ -74,6 +75,9 @@ jobs:
           ./scribo config stage | grep -q 'container_name: stage-mongo'
           ./scribo config stage | grep -q "source: $SCRIBO_ROOT/stage/mongo"
           ./scribo config stage | grep -q 'init-app-user.js'
+
+      - name: Status daemon
+        run: python3 edge/status/statusd.py --self-test
 
       - name: Nginx render and test
         run: ./scribo check
