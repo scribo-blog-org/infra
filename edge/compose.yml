@@ -39,6 +39,30 @@ services:
       - stage
     restart: unless-stopped
 
+  status:
+    image: python:3.12-alpine
+    container_name: edge-status
+    mem_limit: ${MEM_STATUS:-128m}
+    env_file:
+      - ${STATUS_ENV:?STATUS_ENV is required, run through ./scribo}
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      HOME: /tmp
+    command: ["python", "-u", "/opt/statusd.py"]
+    volumes:
+      - ./status/statusd.py:/opt/statusd.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /:/host:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - prod
+      - stage
+    restart: unless-stopped
+
 # Сети создают стеки окружений. Скрипт scribo заводит их заранее, чтобы edge
 # поднимался и при выключенном окружении.
 networks:

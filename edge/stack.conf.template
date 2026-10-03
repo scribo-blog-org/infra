@@ -85,6 +85,25 @@ server {
         add_header Cache-Control "no-store" always;
     }
 
+    location = /status/operator.js {
+        alias /usr/share/nginx/errors/operator.js;
+        default_type application/javascript;
+        charset utf-8;
+        add_header Cache-Control "no-store" always;
+    }
+
+    location /status/api/ {
+        set $status_upstream edge-status:8090;
+        proxy_pass http://$status_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_set_header X-Scribo-Stack ${STACK};
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 40s;
+        proxy_send_timeout 40s;
+        client_max_body_size 8k;
+        add_header Cache-Control "no-store" always;
+    }
+
     location / {
         set $frontend_upstream ${STACK}-frontend:3000;
         proxy_pass http://$frontend_upstream;
