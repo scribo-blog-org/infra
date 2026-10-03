@@ -1,6 +1,3 @@
-# Описание одного окружения. 10-render-stacks.sh подставляет здесь только
-# приписку окружения и домен: envsubst вызывается со списком переменных, иначе
-# он съел бы $host, $remote_addr и остальные переменные самого nginx.
 
 server {
     listen 80;
@@ -34,8 +31,6 @@ server {
         proxy_read_timeout 3600s;
     }
 
-    # Загруженные картинки nginx читает прямо с тома backend, Node их не видит.
-    # Имя файла аватара не меняется при замене, поэтому no-cache с ETag.
     location /uploads/ {
         alias /srv/uploads/${STACK}/;
         autoindex off;
@@ -45,9 +40,6 @@ server {
         add_header Cross-Origin-Resource-Policy "cross-origin" always;
     }
 
-    # Загрузка своего бекапа: архивы больше общего лимита в 20 МБ. Тело идёт в
-    # backend потоком, без буферизации в nginx, и проверка большого файла
-    # занимает время. Сам размер ограничивает BACKUP_UPLOAD_MAX_MB в backend.
     location = /api/backups/upload {
         set $backend_upstream ${STACK}-backend:3001;
         proxy_pass http://$backend_upstream;
@@ -76,8 +68,6 @@ server {
         include /etc/nginx/snippets/proxy.conf;
     }
 
-    # Страница статуса своего окружения. Проверки внутри неё идут по
-    # относительным путям, то есть на этот же домен и в эти же апстримы.
     location = /status {
         alias /usr/share/nginx/errors/${STACK}/frontend.html;
         default_type text/html;
@@ -116,8 +106,6 @@ server {
         error_page 504 =504 /__frontend_down.html;
     }
 
-    # Static page when the frontend container is down. Nginx generates
-    # 502/504 itself on connect failure; Next responses are left as-is.
     location = /__frontend_down.html {
         internal;
         alias /usr/share/nginx/errors/${STACK}/frontend.html;

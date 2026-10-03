@@ -1,12 +1,3 @@
-# Один стек приложений на оба окружения. Поднимается дважды, из каталога
-# окружения: там лежат stack.env для подстановок ниже и env/*.env для контейнеров.
-#
-#   ./scribo up prod
-#   ./scribo up stage
-#
-# STACK задаёт приписку в именах контейнеров и имя сети. Без него окружения
-# были бы неотличимы для nginx: у Docker в DNS нет имён с указанием сети,
-# и на запрос `backend` резолвер вернул бы адреса из обеих сетей сразу.
 
 services:
   frontend:
@@ -32,13 +23,9 @@ services:
       - ./env/backend.env
     environment:
       PORT: "3001"
-      # Внутри стека сервисы зовут друг друга по имени сервиса, без приписки.
       REDIS_URL: redis://redis:6379
       UPLOADS_DIR: /app/uploads
       BACKUPS_DIR: /app/backups
-    # Папки окружения на хосте. Путь `./` считается от --project-directory,
-    # то есть от /srv/scribo/<окружение>, поэтому прод и стейдж не пересекаются
-    # и приписка STACK здесь не нужна. Создаёт их scripts/vm-setup.sh.
     volumes:
       - ./uploads:/app/uploads
       - ./backups:/app/backups
@@ -47,8 +34,6 @@ services:
         condition: service_healthy
       socket:
         condition: service_healthy
-      # Свой Mongo есть не у всех окружений (профиль mongo в stack.env), поэтому
-      # зависимость необязательная: без профиля сервис не поднимается и не ждётся.
       mongo:
         condition: service_healthy
         required: false
@@ -98,29 +83,17 @@ services:
       retries: 15
     restart: unless-stopped
 
-  # База в контейнере. Включается профилем: в stack.env окружения строка
-  # COMPOSE_PROFILES=mongo. Без неё сервис не поднимается, и окружение остаётся
-  # на внешней базе (Atlas), как прод. Порты наружу не публикуются: до базы
-  # доходят только контейнеры этого окружения по имени сервиса `mongo`.
   mongo:
     profiles: ["mongo"]
-    # 7.0, а не 8.0: на Linux 6.19 и новее (так у нашей виртуалки) mongod 8.0 и выше
-    # не стартует из-за несовместимости TCMalloc с ядром (SERVER-121912).
     image: mongo:${MONGO_VERSION:-7.0}
     container_name: ${STACK:?STACK is required}-mongo
     mem_limit: ${MEM_MONGO:-1g}
     env_file:
       - ./env/mongo.env
-    # Кеш WiredTiger по умолчанию берёт половину памяти хоста и игнорирует
-    # потолок контейнера, поэтому задаём его явно.
     command:
       - mongod
       - --wiredTigerCacheSizeGB
       - ${MONGO_CACHE_GB:-0.5}
-    # Данные в папке окружения на хосте, как загрузки и бекапы. Владелец папки
-    # uid 999 (пользователь mongodb внутри образа), создаёт её vm-setup.sh.
-    # Скрипт инициализации берётся из этого репозитория: ./scribo передаёт путь
-    # в SCRIBO_INFRA_DIR.
     volumes:
       - ./mongo:/data/db
       - ${SCRIBO_INFRA_DIR:-/srv/scribo/infra}/mongo/init-app-user.js:/docker-entrypoint-initdb.d/10-app-user.js:ro
@@ -132,8 +105,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-# Своя сеть на окружение. nginx из стека edge подключается к обеим и ходит
-# в сервисы по именам контейнеров: prod-backend:3001, stage-backend:3001.
 networks:
   default:
     name: scribo-${STACK:?STACK is required}
