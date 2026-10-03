@@ -153,6 +153,7 @@ cat <<TEXT
        $ROOT/prod/stack.env, $ROOT/prod/env/*.env
        $ROOT/stage/stack.env, $ROOT/stage/env/*.env
        $ROOT/edge/stack.env
+       $ROOT/edge/env/status.env
   3. Открыть 80 и 443 в Security List у VCN — iptables на хосте этого не делает
   4. Если окружение на внешней базе (Atlas), добавить исходящий IP этой машины в её IP Access List.
      Окружениям со своим Mongo (COMPOSE_PROFILES=mongo) это не нужно.

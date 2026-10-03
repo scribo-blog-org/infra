@@ -72,7 +72,8 @@ compose() {
             ;;
         edge)
             [ -f "$ROOT/edge/stack.env" ] || die "нет $ROOT/edge/stack.env"
-            SCRIBO_ROOT=$ROOT docker compose \
+            [ -f "$ROOT/edge/env/status.env" ] || die "нет $ROOT/edge/env/status.env — скопируйте infra/env/status.env.example и задайте STATUS_USER, STATUS_PASSWORD, STATUS_SECRET"
+            STATUS_ENV=$ROOT/edge/env/status.env SCRIBO_ROOT=$ROOT docker compose \
                 --env-file "$ROOT/edge/stack.env" \
                 -f "$INFRA_DIR/edge/compose.yml" \
                 "$@"
