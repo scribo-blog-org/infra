@@ -1,185 +1,218 @@
-# Scribo
+# Scribo infrastructure
 
-Публичный сайт блога. Четыре репозитория: этот (`infra`) описывает машину, на которой всё крутится. Код приложений живёт отдельно.
+Scribo is a public blog with accounts, posts, comments, search, support tickets and a messenger. It is split across four repositories; this one describes the machine everything runs on and holds the only files that are deployed to it.
 
-| Репозиторий | Что это |
+| Repository | What it is |
 | --- | --- |
-| `frontend` | Next.js, страницы и браузерный клиент |
-| `backend` | NestJS, HTTP API |
-| `socket` | WebSocket: сообщения и присутствие |
-| `infra` | Compose, nginx, сертификат, скрипты на сервере |
+| `frontend` | Next.js, pages and the browser client |
+| `backend` | NestJS, the HTTP API and all persistent state |
+| `socket` | WebSocket delivery for chat, typing and presence |
+| `infra` | this repository: compose files, nginx, certificates, server scripts |
 
-Сайт: `https://scribo.pp.ua`. Стейдж: `https://scribo-stage.pp.ua`. Оба имени смотрят на один IP. Снаружи открыты только порты 80 и 443.
+Site: `https://scribo.pp.ua`. Staging: `https://scribo-stage.pp.ua`. Both names point at the same IP. Only ports 80 and 443 are open to the internet.
 
-Машина: Oracle Cloud Free Tier, `VM.Standard.A1.Flex`, 2 OCPU и 12 ГБ. Процессор Ampere, то есть **aarch64**: образы приложений собираются на ARM-раннерах GitHub, иначе на этой машине они не запускаются.
+The machine is an Oracle Cloud Free Tier `VM.Standard.A1.Flex`, 2 OCPU and 12 GB. The processor is Ampere, that is **aarch64**: application images are built on GitHub ARM runners, otherwise they will not start here.
 
-## Команды на сервере
+## How the pieces fit together
 
-Всё через `infra/scribo`, из любого каталога. Цель — `prod`, `stage` или `edge`.
+The browser is the only thing that talks to more than one service. It loads pages from the frontend, calls the API directly over `/api`, and opens a WebSocket on `/ws`. The frontend process does not proxy either of them.
 
-```bash
-./scribo up prod          # весь прод со свежими образами из GHCR
-./scribo down prod        # убрать контейнеры прода; папки uploads и backups остаются
-./scribo up stage         # то же для стейджа
-./scribo up prod backend  # один сервис
-./scribo restart prod backend
-./scribo logs prod backend
-./scribo up all           # prod, stage, затем edge, всё со свежими образами
-./scribo down all         # edge, stage, prod
-./scribo ps               # состояние всех трёх
+```
+browser
+  |  HTTPS / WSS
+  v
+edge-nginx ──┬── scribo.pp.ua       → prod-frontend / prod-backend / prod-socket
+             └── scribo-stage.pp.ua → stage-frontend / stage-backend / stage-socket
+                                                   |
+                                                   |- MongoDB (Atlas or a container)
+                                                   |- uploads directory on the host
+                                                   |- mail
+                                                   `- Redis pub/sub inside the stack
 ```
 
-## Локально
+The backend owns the data. It writes to Mongo, writes images into the uploads directory, sends mail, and publishes `{ room, event, payload }` into the Redis channel `scribo:events`. The socket service subscribes to that channel, verifies access tokens with the RS256 **public** key, and reads conversation membership from the same Mongo so a client cannot join a chat it does not belong to. It never creates a message: creating one stays an HTTP call to the backend, and the socket event is only the notification that it happened. Typing indicators are the one thing that never reaches the backend — they live entirely in Redis between sockets, because they are not worth persisting.
 
-Из `infra/local`, обычными командами compose (образы собираются из соседних каталогов `backend`, `socket`, `frontend`):
+Redis channel names are identical in both environments. That is safe: the processes connect to different containers on different networks and never see each other's traffic.
 
-```bash
-docker compose up -d --build      # всё
-docker compose down               # остановить всё, данные Mongo остаются
-docker compose up -d redis mongo  # только нужные сервисы
-docker compose down -v            # и стереть данные
-```
+## Three stacks
 
-`down` не трогает папки на хосте, так что картинки и бекапы переживают остановку. Окружение без запущенного `edge` работает, но снаружи недоступно.
+The machine runs three independent Compose projects.
 
-## Три стека
-
-На машине три независимых проекта Compose.
-
-| Стек | Что внутри | Сеть |
+| Stack | Contents | Network |
 | --- | --- | --- |
 | `prod` | frontend, backend, socket, redis | `scribo-prod` |
-| `stage` | то же самое | `scribo-stage` |
-| `edge` | nginx: порты 80 и 443, сертификаты; `status`: вход на странице статуса и управление контейнерами | подключён к обеим |
+| `stage` | the same | `scribo-stage` |
+| `edge` | nginx with ports 80 and 443 and the certificates; `status` for the operator console | attached to both |
 
-`prod` и `stage` описаны **одним файлом** `compose.yml`. Он поднимается дважды, из разных каталогов и с разными env. Окружения не пересекаются: свои контейнеры, своя сеть, свой Redis, своя страница статуса.
+`prod` and `stage` are described by **one** `compose.yml`. It is brought up twice, from different directories and with different environment files. The environments do not overlap: separate containers, separate network, separate Redis, separate status page.
 
-`edge` держит порты и раскидывает запросы по домену. Зависимости от окружений у него нет: апстримы в `nginx.conf` заданы переменными с резолвером Docker DNS, поэтому nginx поднимается и когда окружение выключено, и тогда отдаёт его страницу статуса.
+`edge` owns the ports and routes by domain. It has no dependency on the environments: the upstreams in the rendered configuration are variables resolved through the Docker DNS resolver, so nginx starts even when an environment is down, and in that case serves its status page.
 
-## Как запрос доходит до сервиса
+## How a request reaches a service
 
-Браузер приходит на один из двух хостов. Nginx смотрит на `server_name`, дальше на путь, и отдаёт запрос контейнеру нужного окружения.
+nginx looks at `server_name` first, then at the path, and hands the request to the right container of the right environment.
 
-| Путь | Куда |
+| Path | Target |
 | --- | --- |
-| `/`, страницы, `/_next` | `<окружение>-frontend:3000`. Если фронт не отвечает, nginx отдаёт страницу статуса |
-| `/status` | та же страница, всегда с nginx. Скрипт на ней сам спрашивает `/`, `/health` и `/ws`. Блок оператора ходит в `/status/api/` |
-| `/api`, `/api/...` | `<окружение>-backend:3001` |
-| `/health` | `<окружение>-backend:3001` |
-| `/ws` | `<окружение>-socket:3002` |
-| `/.well-known/acme-challenge/` | файлы certbot, только по HTTP |
+| `/`, pages, `/_next` | `<stack>-frontend:3000`. If the frontend does not answer, nginx serves the status page |
+| `/status` | the same page, always from nginx. Its script probes `/`, `/health` and `/ws`; the operator block calls `/status/api/` |
+| `/api`, `/api/...` | `<stack>-backend:3001` |
+| `/health` | `<stack>-backend:3001` |
+| `/ws` | `<stack>-socket:3002` |
+| `/uploads/` | the environment's uploads directory, read-only, straight from disk |
+| `/.well-known/acme-challenge/` | certbot webroot, over HTTP only |
 
-Порты 3000, 3001 и 3002 наружу не опубликованы. Проверить API снаружи можно только через домен: `https://scribo.pp.ua/api/...` и `.../health`.
+Ports 3000, 3001 and 3002 are not published. The API can only be reached from outside through the domain.
 
-Фронт не ходит на backend по локальному порту. В браузере `NEXT_PUBLIC_APP_API_URL` равен адресу сайта, к нему дописывается `/api/...`, и запрос снова приходит на nginx. Сокет так же: `wss://<домен>/ws`.
+The frontend does not call the backend on a local port. In the browser `NEXT_PUBLIC_APP_API_URL` equals the site address, `/api/...` is appended, and the request arrives at nginx again. The socket works the same way through `wss://<domain>/ws`.
 
-Журнал успешных запросов выключен (`access_log off`), ошибки идут в `error_log`.
+Successful requests are not logged (`access_log off`); errors go to `error_log`.
 
-## Приписки в именах контейнеров
+## Why container names carry a prefix
 
-Контейнеры называются `prod-backend`, `stage-backend` и так далее. Приписка приходит из переменной `STACK` и нужна ровно для одного: у Docker в DNS нет имён с указанием сети. Nginx подключён к двум сетям сразу, и если бы в обеих отвечал контейнер с именем `backend`, резолвер вернул бы оба адреса и раскидывал запросы между продом и стейджем вперемешку.
+Containers are called `prod-backend`, `stage-backend` and so on. The prefix comes from the `STACK` variable and exists for exactly one reason: Docker's DNS has no notion of "the one on this network". nginx is attached to both networks, and if a container named `backend` answered on each of them, the resolver would return both addresses and spread requests across production and staging at random.
 
-Внутри стека приписки нет: сервисы зовут друг друга по имени сервиса, `backend` ходит в `redis` просто как `redis`. Поэтому `compose.yml` одинаков для обоих окружений.
+Inside a stack there is no prefix: services reach each other by service name, the backend talks to `redis` as `redis`. That is why a single `compose.yml` serves both environments.
 
-## Каталоги на машине
+## Directories on the machine
 
 ```
 /srv/scribo/
-  infra/                  git clone, единственное что обновляет деплой
+  infra/                  git clone; the only thing a deploy updates
   prod/
-    stack.env             STACK, IMAGE_TAG, лимиты памяти
+    stack.env             STACK, IMAGE_TAG, memory limits
     env/                  backend.env, frontend.env, socket.env
-    uploads/              картинки постов и аватары, режим 755
-    backups/              архивы (Mongo + uploads), режим 700
+    uploads/              post images, avatars and group photos, mode 755
+    backups/              archives (Mongo + uploads), mode 700
   stage/
     stack.env
     env/
     uploads/
     backups/
   edge/
-    stack.env             список окружений и доменов
+    stack.env             environment and domain list
     certs/                Let's Encrypt
-    certbot-www/          webroot для ACME
+    certbot-www/          ACME webroot
 ```
 
-Пользователь машины — `scribo`, деплой из GitHub Actions заходит как `github-actions-deploy`. Оба в группе `docker`, sudo только у первого. Каталоги под `/srv/scribo` принадлежат `scribo:docker` с setgid, поэтому новые файлы наследуют группу и деплой может писать без починки прав.
+The machine user is `scribo`; GitHub Actions connects as `github-actions-deploy`. Both are in the `docker` group, only the first has sudo. Everything under `/srv/scribo` is owned by `scribo:docker` with setgid, so new files inherit the group and a deploy can write without repairing permissions.
 
-## Два вида env
+## Two kinds of environment file
 
-Это главное место, где легко запутаться.
+This is the easiest thing in the setup to get wrong.
 
-| Файл | Кто читает | Что внутри |
+| File | Read by | Contents |
 | --- | --- | --- |
-| `<окружение>/stack.env` | сам `docker compose`, на хосте | подстановки `${...}` в `compose.yml`: `STACK`, `IMAGE_TAG`, `COMPOSE_PROJECT_NAME`, лимиты памяти |
-| `<окружение>/env/*.env` | контейнеры | `DB_HOST`, `JWT_PRIVATE_KEY`, `NEXT_PUBLIC_*` |
+| `<env>/stack.env` | `docker compose` itself, on the host | the `${...}` substitutions in `compose.yml`: `STACK`, `IMAGE_TAG`, `COMPOSE_PROJECT_NAME`, memory limits |
+| `<env>/env/*.env` | the containers | `DB_HOST`, `JWT_PRIVATE_KEY`, `NEXT_PUBLIC_*` and the rest |
 
-Compose в `env/*.env` не заглядывает, он их только передаёт внутрь. Подстановка `${STACK}` берётся исключительно из `stack.env`.
+Compose never looks inside `env/*.env`, it only passes them through. A `${STACK}` substitution comes from `stack.env` and nowhere else.
 
-Образцы лежат в `env/*.example`, по одному набору на оба окружения. Настоящие файлы в git не попадают. Прод и стейдж отличаются значениями: `DB_NAME`, `FRONTEND_ORIGIN`, `API_ORIGIN`, все `NEXT_PUBLIC_*`, плюс `IMAGE_TAG` и `STACK` в `stack.env`.
+Templates live in `env/*.example`, one set for both environments. The real files are not in git. Production and staging differ in values: `DB_NAME`, `FRONTEND_ORIGIN`, `API_ORIGIN`, every `NEXT_PUBLIC_*`, plus `IMAGE_TAG` and `STACK` in `stack.env`.
 
-`PORT` и `REDIS_URL` в `env/*.env` не нужны: их задаёт `compose.yml`, он же перекрывает значения оттуда. Сокету нельзя отдавать `JWT_PRIVATE_KEY` и `JWT_REFRESH_KEY`: процесс из-за них завершается при старте.
+`PORT` and `REDIS_URL` do not belong in `env/*.env`: `compose.yml` sets them and overrides anything found there. The socket service must never receive `JWT_PRIVATE_KEY` or `JWT_REFRESH_KEY` — it exits at startup if it does.
 
-У `edge` контейнерный env один: `/srv/scribo/edge/env/status.env`, логин оператора на `/status`. `stack.env` его не заменяет.
+`edge` has a single container environment file, `/srv/scribo/edge/env/status.env`, holding the operator login for `/status`. `stack.env` does not replace it.
 
-`NEXT_PUBLIC_*` читаются при старте контейнера и отдаются в страницу как `window.__SCRIBO_ENV`, в образ не зашиваются. После правки контейнер нужно пересоздать.
+`NEXT_PUBLIC_*` values are read when the frontend container starts and injected into the page as `window.__SCRIBO_ENV`; they are not baked into the image. After editing them the container must be recreated.
 
-## Конфиг nginx собирается при старте
+## The nginx configuration is rendered at startup
 
-В репозитории лежит один `edge/stack.conf.template` — описание одного окружения. При старте контейнера скрипт `edge/entrypoint.d/10-render-stacks.sh` проходит по списку `STACKS` и пишет по файлу на окружение в `/etc/nginx/conf.d/`. Сам `edge/nginx.conf` содержит только блок `http` и `include`.
+The repository holds one `edge/stack.conf.template` describing a single environment. When the container starts, `edge/entrypoint.d/10-render-stacks.sh` walks the `STACKS` list and writes one file per environment into `/etc/nginx/conf.d/`. `edge/nginx.conf` itself contains only the `http` block and the includes.
 
 ```
 STACKS=prod:scribo.pp.ua stage:scribo-stage.pp.ua
 ```
 
-Добавить окружение или домен — это запись в этой строке, а не копия сотни строк конфига. Приписка до двоеточия должна совпадать со `STACK` окружения, иначе nginx будет искать контейнеры, которых нет.
+Adding an environment or a domain is a change to that one line, not a copy of a hundred lines of configuration. The prefix before the colon must match the environment's `STACK`, otherwise nginx will look for containers that do not exist.
 
-Две вещи про это стоит знать. Первая: конфиг на диске не равен конфигу в контейнере, смотреть применённый вариант надо так:
+Two consequences are worth knowing. The configuration on disk is not the configuration in the container, so inspect the rendered one:
 
 ```bash
 docker compose exec nginx cat /etc/nginx/conf.d/prod.conf
 ```
 
-Вторая: `envsubst` вызывается со явным списком переменных. Без списка он подставил бы пустоту в `$host`, `$remote_addr` и `$proxy_add_x_forwarded_for` — это переменные самого nginx, а не шаблона.
+And `envsubst` is called with an explicit variable list. Without it, nginx's own variables — `$host`, `$remote_addr`, `$proxy_add_x_forwarded_for` — would be substituted with empty strings.
 
-Проверить рендер и синтаксис, ничего не поднимая:
+Rendering and syntax can be checked without starting anything:
 
 ```bash
 ./scribo check
 ```
 
-## Страница статуса
+## Commands on the server
 
-`edge/errors/prod/frontend.html` и `edge/errors/stage/frontend.html` — по странице на окружение, чтобы не путать вкладки. Nginx отдаёт её на `/status` и подставляет вместо ответа фронта при 502, 503 и 504.
+Everything goes through `infra/scribo`, from any directory. The target is `prod`, `stage` or `edge`.
 
-Проверки внутри страницы идут по относительным путям (`/`, `/health`, `/ws`), то есть на тот же домен и в апстримы того же окружения. Поэтому страница стейджа не может показать состояние прода.
+```bash
+cd /srv/scribo/infra
 
-Отсюда же следует ограничение: страница живёт в nginx. Если `edge` лежит, статуса нет вообще. И `/health` у бэкенда возвращает статичный ответ, не пингуя базу: отвал Atlas в рантайме страница не покажет.
+./scribo up prod                # bring up an environment with fresh images from GHCR
+./scribo up edge                # bring up nginx and the status service
+./scribo up all                 # prod, then stage, then edge
+./scribo down prod              # remove the containers; uploads and backups stay
+./scribo up prod backend        # a single service
+./scribo pull prod backend      # fetch one image
+./scribo restart prod frontend  # after editing its env file
+./scribo ps                     # state of all three stacks
+./scribo logs prod --tail 50
+./scribo config prod            # the compose file with substitutions applied
+./scribo check                  # render the nginx config and run nginx -t
+./scribo dc prod exec backend sh
+```
 
-Ниже публичных проверок есть вход оператора. Его обслуживает отдельный контейнер `edge-status` в том же стеке `edge`: у nginx нет ни сокета Docker, ни `/proc` хоста, поэтому включать контейнеры и читать память машины со статической страницы нельзя. Поднимается он вместе с nginx, отдельной цели у `./scribo` нет:
+The script assembles the `docker compose` invocation with the right `--project-directory` and `--env-file`. State is looked up in `/srv/scribo`, overridable through `SCRIBO_ROOT` — that is how the local checks and CI run against a fake machine.
+
+```bash
+curl -fsSI https://scribo.pp.ua/health
+```
+
+## Running the whole system locally
+
+From `infra/local`, with ordinary compose commands. Images are built from the sibling `backend`, `socket` and `frontend` directories.
+
+```bash
+docker compose up -d --build      # everything
+docker compose down               # stop; Mongo data survives
+docker compose up -d redis mongo  # only the datastores
+docker compose down -v            # stop and erase the data
+```
+
+`down` does not touch host directories, so images and backups survive a restart. An environment without `edge` works, it is simply not reachable from outside.
+
+## The status page
+
+`edge/errors/prod/frontend.html` and `edge/errors/stage/frontend.html` are one page per environment, so two browser tabs cannot be confused. nginx serves it at `/status` and substitutes it for the frontend response on 502, 503 and 504.
+
+Its probes use relative paths (`/`, `/health`, `/ws`), which means the same domain and the upstreams of the same environment. The staging page therefore cannot report on production.
+
+The limitation that follows: the page lives in nginx. If `edge` is down there is no status at all. And the backend's `/health` is a static answer that does not ping the database, so an Atlas outage at runtime will not show up there.
+
+Below the public probes there is an operator login, served by a separate `edge-status` container in the same stack: nginx has neither the Docker socket nor the host `/proc`, so a static page cannot start containers or read machine memory. It comes up together with nginx:
 
 ```bash
 ./scribo up edge
 ```
 
-Креды лежат в `/srv/scribo/edge/env/status.env` (образец `env/status.env.example`): `STATUS_USER`, `STATUS_PASSWORD` и `STATUS_SECRET` не короче 16 символов. Пока файл пустой, страница статуса открывается как раньше, а кнопка входа отвечает, что логин не настроен. После правки файла контейнер нужно пересоздать: `./scribo up edge`.
+Credentials live in `/srv/scribo/edge/env/status.env` (template `env/status.env.example`): `STATUS_USER`, `STATUS_PASSWORD` and `STATUS_SECRET`, the last at least 16 characters. While the file is empty the status page works as before and the login button reports that it is not configured. After editing it, recreate the container with `./scribo up edge`.
 
-Сессия — cookie на 12 часов, только на `https://<домен>/status`. Прод и стейдж не делят её. С чужого сайта запрос не проходит: cookie `SameSite=Strict` и заголовок, который ставит только скрипт страницы. После восьми неудачных попыток с одного адреса вход на десять минут закрыт.
+The session is a 12 hour cookie scoped to `https://<domain>/status`. Production and staging do not share it. A request from another site cannot use it: the cookie is `SameSite=Strict` and a header set only by the page's own script is required. After eight failed attempts from one address, logins are blocked for ten minutes.
 
-После входа страница этого домена может:
+Once signed in, the page for that domain can:
 
-- запустить, остановить и перезапустить `frontend`, `backend`, `socket`, `redis` и `mongo` **своего** окружения (стейдж не трогает прод);
-- показать диск: всего, занято, свободно;
-- показать ОЗУ: всего, занято, свободно (`MemAvailable`, то есть сколько система реально может отдать);
-- показать 5 процессов с самой большой RSS, в ГБ и в процентах от ОЗУ;
-- показать 10 процессов с самой большой долей ЦПУ за полсекунды, в процентах от всей машины.
+- start, stop and restart `frontend`, `backend`, `socket`, `redis` and `mongo` of **its own** environment;
+- report disk total, used and free;
+- report RAM total, used and free, using `MemAvailable`, that is what the system can actually hand out;
+- list the five processes with the largest RSS, in GB and as a share of RAM;
+- list the ten processes with the largest CPU share measured over half a second.
 
-Остановка не удаляет контейнер, следующий запуск его поднимает. Если контейнера нет (`./scribo down` его снимает), кнопка так и пишет: сначала `./scribo up <окружение> <сервис>` на сервере. Nginx этой страницей не останавливается: иначе пропадёт и вход.
+Stopping does not remove a container, the next start brings it back. If the container does not exist at all (`./scribo down` removes it), the button says so and the fix is `./scribo up <env> <service>` on the server. nginx cannot be stopped from this page, since that would also remove the way back in.
 
-## Что где хранится
+## What is stored where
 
-Исходников приложений на машине нет. База — MongoDB Atlas, а у окружения с профилем `mongo` свой Mongo в контейнере (раздел «Mongo в контейнере»). Файлы постов лежат в папке `/srv/scribo/<окружение>/uploads` на этой машине и отдаются nginx из edge напрямую (`/uploads/`, только чтение, мимо Node). Оба окружения пока делят один кластер, различаются только `DB_NAME`; загрузки у каждого свои. Redis живёт только в compose, без снимков и AOF: после пересоздания контейнера очередь и присутствие пустые, это нормально.
+No application source exists on the machine. The database is MongoDB Atlas, or a container when the environment enables the `mongo` profile. Uploaded files live in `/srv/scribo/<env>/uploads` and are served by the edge nginx directly, read-only, bypassing Node. Both environments currently share one cluster and differ only by `DB_NAME`; their uploads are separate. Redis exists only inside compose, without snapshots and without AOF: after the container is recreated the queue, presence and typing state are empty, which is expected.
 
-| Сервис | Образ |
+| Service | Image |
 | --- | --- |
 | nginx | `nginx:1.27-alpine` |
 | status | `python:3.12-alpine` |
@@ -188,67 +221,52 @@ docker compose exec nginx cat /etc/nginx/conf.d/prod.conf
 | socket | `ghcr.io/scribo-blog-org/socket:${IMAGE_TAG}` |
 | redis | `redis:7-alpine` |
 
-`IMAGE_TAG` — `latest` у прода и `staging` у стейджа. В GHCR публикуются ещё и теги по sha коммита, поэтому откат — это правка одной строки в `stack.env` и `./scribo up`.
+`IMAGE_TAG` is `latest` for production and `staging` for staging. Commit-sha tags are published as well, so a rollback is one line in `stack.env` followed by `./scribo up`.
 
-## Как сервисы связаны
+## Data directories and backups
 
-Backend пишет в Mongo и в папку загрузок, шлёт почту и публикует события в Redis-канал `scribo:events`. Socket подписан на этот канал и на канал присутствия, проверяет access JWT публичным ключом RS256 и читает участников беседы из той же Mongo, но сам сообщения не создаёт: создание остаётся HTTP-запросом к backend.
+Environment data lives in plain host directories rather than named Docker volumes. Compose bind-mounts them into the backend:
 
-Каналы Redis у прода и стейджа называются одинаково. Это безопасно: процессы ходят в разные контейнеры и чужих сообщений не видят.
+| Host directory | Path in the backend | Also read by |
+| --- | --- | --- |
+| `/srv/scribo/<env>/uploads` | `/app/uploads` | edge nginx at `/srv/uploads/<env>`, read-only |
+| `/srv/scribo/<env>/backups` | `/app/backups` | nothing; never exposed |
 
-```
-браузер
-  │  HTTPS / WSS
-  ▼
-edge-nginx ──┬── scribo.pp.ua       → prod-frontend / prod-backend / prod-socket
-             └── scribo-stage.pp.ua → stage-frontend / stage-backend / stage-socket
-                                                   │
-                                                   ├── MongoDB (Atlas или свой контейнер), папка загрузок, почта
-                                                   └── redis pub/sub внутри своего стека
-```
+The backend reads `/app/uploads` and copies it into every archive, so a backup contains the files as well as the database.
 
-## Команды
+In `compose.yml` the paths are written as `./uploads` and `./backups`. The `scribo` script runs compose with `--project-directory /srv/scribo/<env>`, so `./` resolves to that environment's directory and neither a prefix nor volume names are needed. The directories are created by `scripts/vm-setup.sh` with owner uid 1000, the user the backend image runs as. If a directory is missing, Docker creates it as root and the backend cannot write into it.
 
-```bash
-cd /srv/scribo/infra
+Subdirectories inside `uploads` are created by the backend on first write (`src/avatar`, `src/featured_image`, `src/group`), and nginx serves the whole tree through one `alias`, so a new image kind needs no change here.
 
-./scribo up prod                # поднять окружение
-./scribo up edge                # поднять nginx
-./scribo pull prod backend      # скачать образ одного сервиса
-./scribo restart prod frontend  # после правки его env
-./scribo ps                     # все три стека
-./scribo logs prod --tail 50
-./scribo config prod            # показать compose с подставленными значениями
-./scribo check                  # рендер конфига nginx и nginx -t
-./scribo down stage
-./scribo dc prod exec backend sh
-```
+Backups are produced by the backend itself; there is no separate service and no cron entry. One file `scribo-YYYYMMDD-HHMMSS.tar` holds the Mongo dump and the entire uploads directory. `BACKUP_ENABLED=true|false` in `env/backend.env` controls it: `true` in production, `false` on staging. Every run, including manual ones, is a new file. All of today's are kept, then one per day for the past week, then one per month for a year. Schedule, manual runs, history and download live in the Backups tab of the admin panel, visible only to `tech_admin`. Uploading an archive requires `BACKUP_RESTORE_ENABLED=true`; the `/api/backups/upload` route has its own nginx location with a 4 GB body limit, so changing it means reloading nginx. Retention and restore are documented in full in the backend repository.
 
-Скрипт собирает за вас команду `docker compose` с нужными `--project-directory` и `--env-file`. Состояние ищется в `/srv/scribo`, это переопределяется переменной `SCRIBO_ROOT` (так работают локальные проверки и CI).
+Archives sit on the same machine as the application. If the disk is lost they are lost with it, so a recent archive should be downloaded from the admin panel from time to time.
 
-```bash
-curl -fsSI https://scribo.pp.ua/health
-```
+To read the files on the host: `sudo ls /srv/scribo/prod/backups`. The directory is owned by uid 1000 and is mode 700.
 
-## Сборка и выкладка
+## Building and deploying
 
-Пуш в `master` репозитория `frontend`, `backend` или `socket` запускает GitHub Actions: lint, test, сборка образа на ARM-раннере, push в ghcr.io тегов `latest` и sha коммита, затем SSH на машину, где выполняется `./scribo pull prod <сервис>` и `./scribo up prod <сервис>`.
+A push to `master` in `frontend`, `backend` or `socket` triggers GitHub Actions: lint, test, an image build on an ARM runner, a push to ghcr.io tagged `latest` and the commit sha, then SSH to the machine where `./scribo pull prod <service>` and `./scribo up prod <service>` run.
 
-Пуш в `dev` делает то же самое с тегом `staging` и целью `stage`. Мерж `dev` в `master` закрыт, пока проверка `Build` в pull request не зелёная. PR гоняет lint, test и локальный `docker build` без push, тоже на ARM.
+A push to `dev` does the same with the `staging` tag against the `stage` stack. Merging `dev` into `master` is blocked until the `Build` check on the pull request is green. Pull requests run lint, test and a local `docker build` without pushing, also on ARM.
 
-После выкладки идёт `docker image prune -f`: каждый деплой оставляет предыдущий образ без тега, и без этого диск забивается слоями `node_modules`. Образ `certbot/certbot` эта команда не трогает.
+After a deploy, `docker image prune -f` runs: each deploy leaves the previous image untagged, and without this the disk fills with `node_modules` layers. It does not touch the `certbot/certbot` image.
 
-Сборки на машине нет, `docker compose build` здесь не используется.
+Nothing is built on the machine; `docker compose build` is not used here.
 
-Пуш в `master` этого репозитория заходит на машину, делает `git pull --ff-only` в `/srv/scribo/infra` и поднимает оба окружения. Если в коммите менялось что-то в `edge/`, дополнительно выполняется `./scribo check` на боевых сертификатах и nginx пересоздаётся. Файлы `stack.env` и `env/*.env` workflow не трогает: они лежат вне репозитория.
+A push to `master` in this repository connects to the machine, runs `git pull --ff-only` in `/srv/scribo/infra` and brings both environments up. If the commit touched anything under `edge/`, it additionally runs `./scribo check` against the real certificates and recreates nginx. `stack.env` and `env/*.env` are never touched by the workflow; they live outside the repository.
 
-PR в `master` этого репозитория на сервер не заходит. Он собирает поддельное состояние машины во временном каталоге — образцы env вместо секретов, самоподписанные сертификаты вместо боевых — и прогоняет `./scribo config` для трёх целей и `./scribo check`.
+A pull request in this repository does not touch the server. It assembles a fake machine state in a temporary directory — example env files instead of secrets, self-signed certificates instead of the real ones — and runs `./scribo config` for all three targets plus `./scribo check`.
 
-## Сертификаты
+### Release order
 
-Let's Encrypt, по сертификату на домен, оба в `/srv/scribo/edge/certs`. В nginx смонтированы как `/etc/letsencrypt` только для чтения. Контакт: `scribo.blog.dev@gmail.com`.
+The three applications are versioned independently but deployed from the same branch. When a change spans more than one of them — a new API endpoint plus the screen that calls it, or a new socket event plus its consumer — deploy the backend and the socket service before or together with the frontend. The frontend is the only component that will visibly break if it is newer than what it calls.
 
-Первый выпуск и продление устроены по-разному, и это важно. Пока сертификата нет, nginx с `listen 443 ssl` вообще не стартует, поэтому выпускать нечем. Первый раз certbot поднимает свой сервер на 80-м порту, а `edge` в это время должен быть выключен:
+## Certificates
+
+Let's Encrypt, one certificate per domain, both in `/srv/scribo/edge/certs`, mounted into nginx as `/etc/letsencrypt` read-only. Contact address: `scribo.blog.dev@gmail.com`.
+
+The first issuance and the renewals work differently, and that matters. Until a certificate exists, nginx with `listen 443 ssl` will not start at all, so there is nothing to issue through. The first time, certbot runs its own server on port 80 and `edge` must be down:
 
 ```bash
 ./scribo down edge
@@ -256,86 +274,67 @@ Let's Encrypt, по сертификату на домен, оба в `/srv/scri
 ./scribo up edge
 ```
 
-Продление идёт через webroot и остановки не требует: nginx отдаёт `/.well-known/acme-challenge/` по HTTP, этот путь не редиректится на HTTPS.
+Renewal goes through the webroot and needs no downtime: nginx serves `/.well-known/acme-challenge/` over HTTP and that path is not redirected to HTTPS.
 
 ```bash
 ./scribo renew
 ```
 
-Это уже стоит в крон пользователя `scribo` на 03:00. Certbot продлевает сертификат, когда до конца меньше месяца, и после этого nginx перечитывает конфиг. Сертификат живёт 90 дней.
+This is already in the `scribo` user's crontab at 03:00. Certbot renews when less than a month remains and reloads nginx afterwards. Certificates are valid for 90 days.
 
-## Mongo в контейнере
+## MongoDB in a container
 
-Сервис `mongo` описан в `compose.yml` под профилем `mongo` и по умолчанию **не поднимается**: окружение остаётся на внешней базе (Atlas) и ничего не замечает. Включается построчно в `stack.env` окружения:
+The `mongo` service is declared in `compose.yml` under the `mongo` profile and **does not start by default**: the environment stays on the external database and notices nothing. It is enabled per environment with one line in `stack.env`:
 
 ```
 COMPOSE_PROFILES=mongo
 ```
 
-Что получается: контейнер `<приписка>-mongo` (образ `mongo:7.0`, версию задаёт `MONGO_VERSION`; 8.0 и новее на ядре Linux 6.19+ не стартуют, mongod выходит с ошибкой SERVER-121912, поэтому по умолчанию 7.0), данные в `/srv/scribo/<окружение>/mongo` на хосте, порты наружу не публикуются, до базы доходят только контейнеры этого окружения по имени `mongo`. У каждого окружения своя база и свои пароли. Backend и socket зависят от неё необязательно (`required: false`), поэтому без профиля стеки поднимаются как раньше. Потолки: `MEM_MONGO` (1g) и `MONGO_CACHE_GB` (0.5): кеш WiredTiger сам потолок контейнера не учитывает.
+What that gives: a `<prefix>-mongo` container (image `mongo:7.0`, version set by `MONGO_VERSION`; 8.0 and newer fail to start on Linux kernel 6.19+ with SERVER-121912, hence the 7.0 default), data in `/srv/scribo/<env>/mongo` on the host, no published ports, reachable only by the containers of that environment under the name `mongo`. Each environment gets its own database and its own passwords. The backend and the socket depend on it with `required: false`, so without the profile the stacks come up exactly as before. Limits: `MEM_MONGO` (1g) and `MONGO_CACHE_GB` (0.5), because the WiredTiger cache does not account for the container limit by itself.
 
-**Включить на окружении (например, на стейдже):**
+**Enabling it, for example on staging:**
 
-1. Папка данных. `vm-setup.sh` создаёт её для новых машин, на существующей:
+1. Create the data directory. `vm-setup.sh` does this on new machines; on an existing one:
    ```bash
    sudo install -d -m 700 -o 999 -g 999 /srv/scribo/stage/mongo
    ```
-   Владелец uid 999 — пользователь `mongodb` внутри образа.
-2. `env/mongo.env` по образцу `env/mongo.env.example`: пароль администратора и пользователя приложения. Значения читаются один раз, при первом запуске на пустой папке: скрипт `mongo/init-app-user.js` заводит пользователя приложения с правом `readWrite` только на свою базу.
-3. В `env/backend.env` и `env/socket.env` задать `MONGODB_URI=mongodb://scribo:<пароль приложения>@mongo:27017/scribo?authSource=admin`. Он приоритетнее `DB_USER`, `DB_PASSWORD` и `DB_HOST`, их можно оставить: вернуться на внешнюю базу значит закомментировать `MONGODB_URI`. **В `socket.env` дополнительно нужен `DB_NAME=scribo`** (то же, что `MONGO_APP_DB`): socket берёт имя базы только отсюда, без него он не запустится.
-4. В `stack.env` добавить `COMPOSE_PROFILES=mongo` и поднять: `./scribo up stage`. Compose стартует `mongo` первым и дождётся его healthcheck.
+   uid 999 is the `mongodb` user inside the image.
+2. Write `env/mongo.env` from `env/mongo.env.example`: the admin and application passwords. They are read once, on the first start against an empty directory, when `mongo/init-app-user.js` creates the application user with `readWrite` on its own database only.
+3. In `env/backend.env` and `env/socket.env` set `MONGODB_URI=mongodb://scribo:<app password>@mongo:27017/scribo?authSource=admin`. It takes precedence over `DB_USER`, `DB_PASSWORD` and `DB_HOST`, which can be left in place: going back to the external database means commenting out `MONGODB_URI`. **`socket.env` additionally needs `DB_NAME=scribo`** (the same value as `MONGO_APP_DB`); the socket service takes the database name only from there and will not start without it.
+4. Add `COMPOSE_PROFILES=mongo` to `stack.env` and run `./scribo up stage`. Compose starts `mongo` first and waits for its healthcheck.
 
-База сначала пустая. Данные переносит сам backend через бекап приложения:
+The database starts empty. Data is moved by the backend's own backup mechanism:
 
-1. **До переключения**, пока окружение на Atlas, снять бекап во вкладке «Бекапы» и скачать файл. Для этого нужны `BACKUP_ENABLED=true` и `BACKUP_RESTORE_ENABLED=true` в `backend.env`.
-2. Переключить окружение на свой Mongo, как выше. Зарегистрировать пользователя через сайт и выдать ему роль, чтобы открылась вкладка «Бекапы»:
+1. **Before switching**, while the environment is still on the external database, take a backup from the Backups tab and download the file. This needs `BACKUP_ENABLED=true` and `BACKUP_RESTORE_ENABLED=true` in `backend.env`.
+2. Switch the environment to the container database as above. Register a user through the site and grant a role so the Backups tab appears:
    ```bash
    docker exec stage-mongo sh -c 'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin scribo --quiet --eval "db.users.updateOne({email: \"you@example.com\"}, {\$set: {role: \"tech_admin\"}})"'
    ```
-3. Загрузить скачанный файл кнопкой «Загрузить бекап» и нажать «Восстановить». Имя базы в архиве (`dev`) не мешает: при установке оно заменяется на текущее. Вместе с базой приедет и папка `uploads`.
+3. Upload the downloaded file with Upload backup and press Restore. The database name inside the archive does not matter, it is rewritten on install. The uploads directory comes with it.
 
-Что учесть: в `avatar` и `featured_image` должен лежать путь `/uploads/src/...`, без домена. Браузер дописывает origin своего окружения. Абсолютные ссылки на S3 или на чужой хост так не откроются.
+One thing to watch: `avatar`, `featured_image` and group photos must hold the path `/uploads/src/...` without a domain. The browser prepends the origin of its own environment. Absolute links to S3 or another host will not resolve this way.
 
-**Бекап самой Mongo.** Это те же бекапы приложения из вкладки «Бекапы»: `mongodump` в образе backend подключается к контейнеру по `MONGODB_URI`. Папку `/srv/scribo/<окружение>/mongo` не копируют на ходу: работающая база даёт повреждённую копию.
+**Backing up the container database** is the same application backup: `mongodump` inside the backend image connects to the container through `MONGODB_URI`. Do not copy `/srv/scribo/<env>/mongo` while it is running; a live database yields a corrupt copy.
 
-## Папки данных и бекапы
-
-Данные окружения лежат на хосте обычными папками, а не именованными томами Docker. Compose монтирует их в backend (bind mount: папка хоста видна в контейнере по другому пути, содержимое общее):
-
-| Папка на хосте | Путь в backend | Кто читает ещё |
-| --- | --- | --- |
-| `/srv/scribo/<окружение>/uploads` | `/app/uploads` | nginx из edge, `/srv/uploads/<окружение>`, только чтение |
-| `/srv/scribo/<окружение>/backups` | `/app/backups` | никто, наружу не отдаётся |
-
-Backend читает `/app/uploads` и кладёт её копию в архив, поэтому бекап содержит и загрузки.
-
-В `compose.yml` пути записаны как `./uploads` и `./backups`. Скрипт `scribo` запускает compose с `--project-directory /srv/scribo/<окружение>`, поэтому `./` каждый раз указывает на каталог своего окружения, и ни приписка, ни имена томов не нужны. Папки создаёт `scripts/vm-setup.sh` с владельцем uid 1000: под ним работает процесс внутри образа backend. Если папки нет, Docker создаст её сам от root, и backend не сможет туда писать.
-
-Бекапы делает сам backend, отдельного сервиса и крона нет. В один файл `scribo-ГГГГММДД-ЧЧММСС.tar` попадают дамп Mongo и вся папка `uploads` окружения. Включает их `BACKUP_ENABLED=true|false` в `env/backend.env`: на проде `true`, на стейдже `false`. Каждый запуск (ручной тоже) это новый файл. Сегодняшние хранятся все, за прошлую неделю по одному на день, дальше по одному на месяц (последний день месяца) за год. Расписание, ручной запуск, история и скачивание архива живут во вкладке «Бекапы» админки, видимой только роли `tech_admin`. Свой архив можно загрузить во вкладке «Бекапы» (`BACKUP_RESTORE_ENABLED=true`): для этого маршрута `/api/backups/upload` в `edge/stack.conf.template` увеличен лимит тела до 4 ГБ, после правки перезагрузите nginx. Подробности, срок хранения и восстановление описаны в README репозитория backend.
-
-Архивы лежат на той же машине, что и приложение. Если потеряется диск, пропадут и они, поэтому время от времени стоит скачивать свежий архив из админки.
-
-Прочитать файлы на хосте: `sudo ls /srv/scribo/prod/backups`. Папка принадлежит uid 1000 и закрыта режимом 700.
-
-## Первичная настройка машины
+## First-time machine setup
 
 ```bash
 sudo sh scripts/vm-setup.sh
 ```
 
-Скрипт ставит docker с плагином compose, создаёт пользователей и каталоги, открывает 80 и 443 в `iptables` и заводит крон. Повторный запуск безопасен.
+The script installs Docker with the compose plugin, creates the users and directories, opens 80 and 443 in `iptables` and installs the cron entry. Running it again is safe.
 
-Дальше руками: ключи в `authorized_keys` обоих пользователей, секреты по образцам из `env/`, затем `./scribo certs` и `./scribo up`.
+The rest is manual: keys in `authorized_keys` for both users, secrets from the templates in `env/`, then `./scribo certs` and `./scribo up`.
 
-Три вещи, которых скрипт сделать не может и без которых ничего не поднимется:
+Three things the script cannot do, without which nothing will come up:
 
-- Открыть 80 и 443 в Security List у VCN. Правила `iptables` на хосте этого не заменяют, нужны оба уровня.
-- **Зарезервировать публичный IP.** По умолчанию адрес ephemeral и меняется при stop/start инстанса, а от него зависят и DNS-записи доменов, и список доступа Atlas.
-- Добавить исходящий IP машины в IP Access List у MongoDB Atlas. Backend при старте пингует базу и при неудаче завершается с кодом 1, то есть уходит в рестарт и никогда не становится healthy.
+- Open 80 and 443 in the VCN Security List. Host `iptables` rules do not replace this; both levels are required.
+- **Reserve the public IP.** By default the address is ephemeral and changes on instance stop/start, and both the DNS records and the Atlas access list depend on it.
+- Add the machine's egress IP to the MongoDB Atlas IP Access List. The backend pings the database at startup and exits with code 1 on failure, which means it restarts forever and never becomes healthy.
 
-## Что переживает перезагрузку
+## What survives a reboot
 
-Сертификаты, `stack.env`, `env/*.env` и клон репозитория лежат на диске. Контейнеры поднимает Docker (`restart: unless-stopped`; `docker` и `cron` в systemd — `enabled`). Redis после пересоздания пустой.
+Certificates, `stack.env`, `env/*.env` and the repository clone are on disk. Containers are brought back by Docker (`restart: unless-stopped`; `docker` and `cron` are enabled in systemd). Redis comes back empty.
 
 ```bash
 systemctl is-enabled docker cron
