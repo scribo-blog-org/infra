@@ -110,6 +110,8 @@ Compose never looks inside `env/*.env`, it only passes them through. A `${STACK}
 
 Templates live in `env/*.example`, one set for both environments. The real files are not in git. Production and staging differ in values: `DB_NAME`, `FRONTEND_ORIGIN`, `API_ORIGIN`, every `NEXT_PUBLIC_*`, plus `IMAGE_TAG` and `STACK` in `stack.env`.
 
+`CHAT_ENCRYPTION_KEYS` and `CHAT_ENCRYPTION_ACTIVE_KEY` in `backend.env` are required: the backend does not start without them. Each environment has its own secret, and a backup can only be read back with the key it was made under.
+
 `PORT` and `REDIS_URL` do not belong in `env/*.env`: `compose.yml` sets them and overrides anything found there. The socket service must never receive `JWT_PRIVATE_KEY` or `JWT_REFRESH_KEY` — it exits at startup if it does.
 
 `edge` has a single container environment file, `/srv/scribo/edge/env/status.env`, holding the operator login for `/status`. `stack.env` does not replace it.
