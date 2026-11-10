@@ -45,9 +45,13 @@ services:
       BACKUPS_DIR: /app/backups
       BACKUP_ENABLED: "true"
       SERVE_UPLOADS: "true"
+      LOG_ROOT: /app/logs
+      LOG_DIR: /app/logs/backend
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
     volumes:
       - scribo-uploads:/app/uploads
       - scribo-backups:/app/backups
+      - ./.logs:/app/logs
     ports:
       - "127.0.0.1:3001:3001"
       - "127.0.0.1:3000:3000"
@@ -67,6 +71,10 @@ services:
       MONGODB_URI: mongodb://scribo:scribo@mongo:27017/scribo?authSource=admin
       REDIS_URL: redis://redis:6379
       DB_NAME: scribo
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - ./.logs/socket:/app/logs
     ports:
       - "127.0.0.1:3002:3002"
     depends_on:
@@ -80,6 +88,11 @@ services:
     build: ../../frontend
     container_name: scribo-frontend
     env_file: ../../frontend/.env.local
+    environment:
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - ./.logs/frontend:/app/logs
     network_mode: "service:backend"
     depends_on:
       - backend

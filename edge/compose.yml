@@ -1,6 +1,12 @@
 
 name: scribo-edge
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -25,6 +31,7 @@ services:
     networks:
       - prod
       - stage
+    logging: *logging
     restart: unless-stopped
 
   status:
@@ -49,6 +56,7 @@ services:
     networks:
       - prod
       - stage
+    logging: *logging
     restart: unless-stopped
 
 networks:

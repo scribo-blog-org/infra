@@ -64,6 +64,7 @@ NODE_UID=1000
 for dir in prod stage; do
     install -d -m 755 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/uploads"
     install -d -m 700 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/backups"
+    install -d -m 755 -o "$NODE_UID" -g "$NODE_UID" "$ROOT/$dir/logs" "$ROOT/$dir/logs/backend" "$ROOT/$dir/logs/frontend" "$ROOT/$dir/logs/socket"
 done
 MONGO_UID=999
 for dir in prod stage; do

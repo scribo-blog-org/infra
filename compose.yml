@@ -1,4 +1,16 @@
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-log-env: &log-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-14}
+  LOG_MAX_MB: ${LOG_MAX_MB:-200}
+  LOG_FILE_MB: ${LOG_FILE_MB:-20}
+
 services:
   frontend:
     image: ghcr.io/scribo-blog-org/frontend:${IMAGE_TAG:?IMAGE_TAG is required}
@@ -6,6 +18,12 @@ services:
     mem_limit: ${MEM_FRONTEND:-512m}
     env_file:
       - ./env/frontend.env
+    environment:
+      <<: *log-env
+      LOG_DIR: /app/logs
+    volumes:
+      - ./logs/frontend:/app/logs
+    logging: *logging
     depends_on:
       backend:
         condition: service_healthy
@@ -26,9 +44,14 @@ services:
       REDIS_URL: redis://redis:6379
       UPLOADS_DIR: /app/uploads
       BACKUPS_DIR: /app/backups
+      <<: *log-env
+      LOG_ROOT: /app/logs
+      LOG_DIR: /app/logs/backend
     volumes:
       - ./uploads:/app/uploads
       - ./backups:/app/backups
+      - ./logs:/app/logs
+    logging: *logging
     depends_on:
       redis:
         condition: service_healthy
@@ -50,6 +73,11 @@ services:
     environment:
       PORT: "3002"
       REDIS_URL: redis://redis:6379
+      <<: *log-env
+      LOG_DIR: /app/logs
+    volumes:
+      - ./logs/socket:/app/logs
+    logging: *logging
     depends_on:
       redis:
         condition: service_healthy
@@ -81,6 +109,7 @@ services:
       interval: 5s
       timeout: 2s
       retries: 15
+    logging: *logging
     restart: unless-stopped
 
   mongo:
@@ -103,6 +132,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
+    logging: *logging
     restart: unless-stopped
 
 networks:
