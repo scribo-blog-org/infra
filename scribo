@@ -130,6 +130,7 @@ case $command in
     check)
         docker run --rm \
             -e STACKS="$(stacks)" \
+            -e POST_MEDIA_MAX_MB="${POST_MEDIA_MAX_MB:-100}" \
             -v "$INFRA_DIR/edge/nginx.conf:/etc/nginx/nginx.conf:ro" \
             -v "$INFRA_DIR/edge/stack.conf.template:/etc/nginx/stack.conf.template:ro" \
             -v "$INFRA_DIR/edge/snippets:/etc/nginx/snippets:ro" \

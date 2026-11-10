@@ -116,6 +116,8 @@ Templates live in `env/*.example`, one set for both environments. The real files
 
 `edge` has a single container environment file, `/srv/scribo/edge/env/status.env`, holding the operator login for `/status`. `stack.env` does not replace it.
 
+The post media limit is one number in three places, keep them equal: `POST_MEDIA_MAX_MB` in `backend.env`, `NEXT_PUBLIC_POST_MEDIA_MAX_MB` in `frontend.env`, and `POST_MEDIA_MAX_MB` in the edge `stack.env` (one value for every environment; default 100). The edge value becomes `client_max_body_size` (value + 2 MB) for `POST /api/posts` and `PATCH /api/posts/:id`; the render script prints it at startup. Changing it needs `./scribo up edge`.
+
 `NEXT_PUBLIC_*` values are read when the frontend container starts and injected into the page as `window.__SCRIBO_ENV`; they are not baked into the image. After editing them the container must be recreated.
 
 ## The nginx configuration is rendered at startup
