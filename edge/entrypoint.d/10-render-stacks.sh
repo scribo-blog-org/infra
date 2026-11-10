@@ -4,7 +4,6 @@ set -eu
 template=/etc/nginx/stack.conf.template
 out=/etc/nginx/conf.d
 
-# Body allowance on top of the media limit for the text fields and multipart framing.
 overhead_mb=2
 
 rm -f "$out"/default.conf
@@ -27,7 +26,6 @@ for entry in ${STACKS}; do
             ;;
     esac
 
-    # Round up to whole MB (nginx takes integer sizes in m) and add the overhead.
     POST_BODY_MAX_MB=$(awk -v m="$media_mb" -v o="$overhead_mb" 'BEGIN { c = int(m); if (c < m) c++; print c + o }')
 
     export STACK DOMAIN POST_BODY_MAX_MB

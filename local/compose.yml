@@ -87,7 +87,7 @@ services:
   frontend:
     build: ../../frontend
     container_name: scribo-frontend
-    env_file: ../../frontend/.env.local
+    env_file: ../../frontend/.env
     environment:
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-debug}
