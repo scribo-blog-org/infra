@@ -15,6 +15,7 @@ usage: scribo <command> [target] [arguments]
   up <target> [service...]      start with fresh images; target all means prod, stage, edge
   down <target>                 stop and remove containers
   pull <target> [service...]    download images
+  prune                         remove unused images; waits for running pulls
   restart <target> [service...]
   logs <target> [arguments]
   config <target>               print compose with values filled in
@@ -32,6 +33,41 @@ TEXT
 die() {
     echo "scribo: $1" >&2
     exit 1
+}
+
+LOCK_FILE=${SCRIBO_LOCK_FILE:-$ROOT/.docker.lock}
+LOCK_WAIT=${SCRIBO_LOCK_WAIT:-900}
+
+# Several deploys can run at once on this machine. Pulls and starts take the lock
+# shared, so they still run side by side; prune takes it exclusive, so it waits for
+# every running pull and nothing new starts while it cleans.
+with_lock() {
+    mode=$1
+    shift
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "scribo: flock is missing, running without the docker lock" >&2
+        "$@"
+        return
+    fi
+    if [ ! -e "$LOCK_FILE" ]; then
+        (umask 002 && : >"$LOCK_FILE") 2>/dev/null || true
+    fi
+    if [ ! -w "$LOCK_FILE" ]; then
+        echo "scribo: $LOCK_FILE is not writable, running without the docker lock" >&2
+        "$@"
+        return
+    fi
+    (
+        flock -w "$LOCK_WAIT" "$mode" 9 || die "gave up waiting for the docker lock after ${LOCK_WAIT}s"
+        "$@"
+    ) 9>>"$LOCK_FILE"
+}
+
+up_stack() {
+    target=$1
+    shift
+    ensure_log_dirs "$target"
+    compose "$target" up -d --pull always "$@"
 }
 
 stacks() {
@@ -110,10 +146,7 @@ case $command in
             ensure_networks
         fi
         case $target in
-            prod | stage)
-                ensure_log_dirs "$target"
-                compose "$target" up -d --pull always "$@"
-                ;;
+            prod | stage) with_lock -s up_stack "$target" "$@" ;;
             *) compose "$target" up -d "$@" ;;
         esac
         ;;
@@ -121,7 +154,14 @@ case $command in
         [ -n "${1:-}" ] || usage
         target=$1
         shift
-        compose "$target" "$command" "$@"
+        if [ "$command" = pull ]; then
+            with_lock -s compose "$target" pull "$@"
+        else
+            compose "$target" "$command" "$@"
+        fi
+        ;;
+    prune)
+        with_lock -x docker image prune -f
         ;;
     dc)
         [ -n "${1:-}" ] || usage
