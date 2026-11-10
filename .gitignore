@@ -5,3 +5,4 @@
 .root/
 *.log
 .DS_Store
+local/.logs/

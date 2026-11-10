@@ -6,6 +6,7 @@ ROOT=${SCRIBO_ROOT:-/srv/scribo}
 CERTBOT_EMAIL=${CERTBOT_EMAIL:-scribo.blog.dev@gmail.com}
 CERTBOT_IMAGE=certbot/certbot
 NGINX_IMAGE=nginx:1.27-alpine
+ALPINE_IMAGE=alpine:3.20
 
 usage() {
     cat >&2 <<'TEXT'
@@ -45,6 +46,15 @@ ensure_networks() {
             docker network create "$net" >/dev/null
         fi
     done
+}
+
+ensure_log_dirs() {
+    target=$1
+    docker run --rm -v "$ROOT/$target:/stack" --entrypoint sh "$ALPINE_IMAGE" -c '
+        mkdir -p /stack/logs/backend /stack/logs/frontend /stack/logs/socket
+        chown 1000:1000 /stack/logs /stack/logs/backend /stack/logs/frontend /stack/logs/socket
+        chmod 755 /stack/logs
+    ' >/dev/null
 }
 
 compose() {
@@ -100,7 +110,10 @@ case $command in
             ensure_networks
         fi
         case $target in
-            prod | stage) compose "$target" up -d --pull always "$@" ;;
+            prod | stage)
+                ensure_log_dirs "$target"
+                compose "$target" up -d --pull always "$@"
+                ;;
             *) compose "$target" up -d "$@" ;;
         esac
         ;;

@@ -184,6 +184,25 @@ docker compose down -v            # stop and erase the data
 
 `down` does not touch host directories, so images and backups survive a restart. An environment without `edge` works, it is simply not reachable from outside.
 
+## Runtime logs
+
+The backend, socket and frontend write JSON lines to files on the host, so the history survives a redeploy:
+
+| Service | Host path |
+| --- | --- |
+| backend | `<stack>/logs/backend/backend.log` |
+| socket | `<stack>/logs/socket/socket.log` |
+| frontend | `<stack>/logs/frontend/frontend.log` |
+
+The backend mounts the whole `<stack>/logs` directory and serves it to the admin panel (Logs, the Backend, Socket and Frontend tabs) through `GET /api/logs/runtime`, which needs `view_logs`. Locally the files land in `infra/local/.logs`.
+
+What is written: every API request (status, time, user, `request_id`), every server error with its stack, and service health (start, shutdown, Mongo and Redis connection). Socket connects and disconnects are not logged. A server error is also stored as a `server_error` event in Mongo, with the same `request_id`.
+
+nginx is not part of this. Its output stays in `docker logs edge-nginx` (`./scribo logs edge`), capped by `json-file` (`10m` x 3), and it passes `X-Request-Id` to the services.
+
+Rotation keeps at most `LOG_RETENTION_DAYS` (14) days and `LOG_MAX_MB` (200) MB per service, in files of `LOG_FILE_MB` (20) MB, old ones gzipped; each service does it itself. Set `LOG_LEVEL` (`debug`, `info`, `warn`, `error`) in `stack.env`.
+
+`./scribo up` creates the directories with the right owner.
 ## The status page
 
 `edge/errors/prod/frontend.html` and `edge/errors/stage/frontend.html` are one page per environment, so two browser tabs cannot be confused. nginx serves it at `/status` and substitutes it for the frontend response on 502, 503 and 504.
