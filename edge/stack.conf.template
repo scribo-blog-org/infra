@@ -50,6 +50,16 @@ server {
         proxy_send_timeout 900s;
     }
 
+    location ~ ^/api/posts(/[^/]+)?/?$ {
+        set $backend_upstream ${STACK}-backend:3001;
+        proxy_pass http://$backend_upstream;
+        include /etc/nginx/snippets/proxy.conf;
+        client_max_body_size ${POST_BODY_MAX_MB}m;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
     location /api/ {
         set $backend_upstream ${STACK}-backend:3001;
         proxy_pass http://$backend_upstream;
